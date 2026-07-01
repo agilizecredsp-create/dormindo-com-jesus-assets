@@ -12,6 +12,9 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
+      - name: Instalar FFmpeg
+        run: sudo apt-get update && sudo apt-get install -y ffmpeg
+
       - name: Rodar script de renderização
         env:
           AUDIO_URLS_JSON: ${{ toJson(github.event.client_payload.audioUrls) }}
