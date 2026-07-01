@@ -1,0 +1,31 @@
+name: Render Video Longo
+
+on:
+  repository_dispatch:
+    types: [render-video-longo]
+
+jobs:
+  render:
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Rodar script de renderização
+        env:
+          AUDIO_URLS_JSON: ${{ toJson(github.event.client_payload.audioUrls) }}
+          IMAGE_URLS_JSON: ${{ toJson(github.event.client_payload.imageUrls) }}
+          DURACAO_ALVO_SEG: ${{ github.event.client_payload.duracaoAlvoSegundos }}
+        run: |
+          chmod +x render_video.sh
+          ./render_video.sh
+
+      - name: Publicar vídeo como Release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          TAG="video-${{ github.event.client_payload.correlationId }}"
+          gh release create "$TAG" render_work/video_final.mp4 \
+            --title "$TAG" \
+            --notes "Render automático via N8N - ${{ github.event.client_payload.correlationId }}"
