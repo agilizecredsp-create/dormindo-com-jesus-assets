@@ -1,9 +1,7 @@
 name: Render Video Longo
-
 on:
   repository_dispatch:
     types: [render-video-longo]
-
 jobs:
   render:
     runs-on: ubuntu-latest
@@ -11,10 +9,8 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v4
-
       - name: Instalar FFmpeg
         run: sudo apt-get update && sudo apt-get install -y ffmpeg
-
       - name: Rodar script de renderização
         env:
           AUDIO_URLS_JSON: ${{ toJson(github.event.client_payload.audioUrls) }}
@@ -23,12 +19,14 @@ jobs:
         run: |
           chmod +x render_video.sh
           ./render_video.sh
-
       - name: Publicar vídeo como Release
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           TAG="video-${{ github.event.client_payload.correlationId }}"
-          gh release create "$TAG" render_work/video_final.mp4 \
+          gh release create "$TAG" \
+            render_work/video_final.mp4 \
+            render_work/short_1.mp4 \
+            render_work/short_2.mp4 \
             --title "$TAG" \
             --notes "Render automático via N8N - ${{ github.event.client_payload.correlationId }}"
