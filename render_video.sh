@@ -14,6 +14,7 @@ WORKDIR="render_work"
 rm -rf "$WORKDIR" && mkdir -p "$WORKDIR"
 cd "$WORKDIR"
 XFADE_DUR=0.5
+FONT="/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf"
 echo "== Baixando áudios =="
 echo "$AUDIO_URLS_JSON" | jq -r '.[]' | nl -w2 -nrz | while read -r idx url; do
   curl -sL "$url" -o "audio_${idx}.mp3"
@@ -80,6 +81,8 @@ echo "== Concluído =="
 ffprobe -v error -show_entries format=duration -of default=noprint_wrappers=1:nokey=1 video_final.mp4
 ls -la video_final.mp4
 # ---------- 4. Gerar Shorts (2 cortes verticais 9:16) ----------
+# IMPORTANTE: os Shorts são cortados AQUI, a partir do video_final.mp4 original
+# (sem a vinheta de CTA), pra manter os timestamps dos cortes fiéis ao conteúdo real.
 echo "== Gerando Shorts =="
 SHORT_DUR=50
 INICIO_SHORT_1=0
@@ -103,3 +106,45 @@ gerar_short "$INICIO_SHORT_1" "short_1.mp4"
 gerar_short "$INICIO_SHORT_2" "short_2.mp4"
 echo "== Shorts gerados =="
 ls -la short_1.mp4 short_2.mp4
+# ---------- 5. Gerar thumbnail customizada (nome do canal + duração) ----------
+echo "== Gerando thumbnail customizada =="
+THUMB_IMG="img_01.png"
+if [ "$DURACAO_ALVO_SEG" -ge 3600 ]; then
+  THUMB_HORAS=$(( DURACAO_ALVO_SEG / 3600 ))
+  THUMB_MIN_REST=$(( (DURACAO_ALVO_SEG % 3600) / 60 ))
+  if [ "$THUMB_MIN_REST" -gt 0 ]; then
+    DURACAO_TEXTO="${THUMB_HORAS}H${THUMB_MIN_REST}MIN"
+  else
+    DURACAO_TEXTO="${THUMB_HORAS}H"
+  fi
+else
+  THUMB_MINUTOS=$(( DURACAO_ALVO_SEG / 60 ))
+  DURACAO_TEXTO="${THUMB_MINUTOS} MINUTOS"
+fi
+ffmpeg -y -i "$THUMB_IMG" \
+  -vf "scale=1280:720,\
+drawtext=fontfile=${FONT}:text='DORMINDO COM JESUS':fontsize=68:fontcolor=white:box=1:boxcolor=black@0.55:boxborderw=18:x=(w-text_w)/2:y=50,\
+drawtext=fontfile=${FONT}:text='${DURACAO_TEXTO}':fontsize=54:fontcolor=white:box=1:boxcolor=black@0.6:boxborderw=15:x=w-text_w-40:y=h-text_h-40" \
+  -frames:v 1 thumbnail.jpg -loglevel error
+echo "== Thumbnail gerada =="
+ls -la thumbnail.jpg
+# ---------- 6. Gerar vinheta de CTA (convite pra se inscrever) e anexar ao final do vídeo ----------
+# A vinheta entra só no vídeo principal, depois que os Shorts já foram cortados (passo 4),
+# pra não interferir no conteúdo/timing dos Shorts.
+echo "== Gerando vinheta de inscrição (CTA) =="
+CTA_DUR=5
+CTA_IMG="img_01.png"
+ffmpeg -y -loop 1 -i "$CTA_IMG" -f lavfi -i anullsrc=channel_layout=stereo:sample_rate=44100 -t "$CTA_DUR" \
+  -vf "scale=1920:1080,fps=25,\
+drawtext=fontfile=${FONT}:text='Inscreva-se no canal!':fontsize=90:fontcolor=white:box=1:boxcolor=black@0.6:boxborderw=20:x=(w-text_w)/2:y=(h-text_h)/2-60,\
+drawtext=fontfile=${FONT}:text='Dormindo com Jesus':fontsize=60:fontcolor=white:box=1:boxcolor=black@0.6:boxborderw=15:x=(w-text_w)/2:y=(h-text_h)/2+60,\
+fade=t=in:st=0:d=0.5,fade=t=out:st=$(echo "$CTA_DUR - 0.5" | bc):d=0.5" \
+  -c:v libx264 -preset veryfast -pix_fmt yuv420p -c:a aac -shortest vinheta.mp4 -loglevel error
+echo "== Anexando vinheta ao final do vídeo principal =="
+echo "file '$(pwd)/video_final.mp4'" > concat_cta_list.txt
+echo "file '$(pwd)/vinheta.mp4'" >> concat_cta_list.txt
+ffmpeg -y -f concat -safe 0 -i concat_cta_list.txt -c copy video_final_com_cta.mp4 -loglevel error
+mv video_final_com_cta.mp4 video_final.mp4
+echo "== Vídeo final com CTA pronto =="
+ffprobe -v error -show_entries format=duration -of default=noprint_wrappers=1:nokey=1 video_final.mp4
+ls -la video_final.mp4 thumbnail.jpg short_1.mp4 short_2.mp4
