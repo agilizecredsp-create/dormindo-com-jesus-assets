@@ -24,6 +24,11 @@ if [ ! -s "$FONT" ]; then
   echo "Aviso: download da fonte Baloo 2 falhou, usando DejaVu Sans Bold como fallback"
   FONT="/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf"
 fi
+echo "== Instalando Pillow (composição da thumbnail) =="
+pip install pillow --break-system-packages --quiet 2>/dev/null || pip install pillow --quiet
+echo "== Baixando template fixo da thumbnail (arte + texto já prontos) =="
+THUMB_TEMPLATE_URL="https://raw.githubusercontent.com/agilizecredsp-create/dormindo-com-jesus-assets/main/ChatGPT%20Image%2019%20de%20jul.%20de%202026,%2011_09_25.png"
+curl -sL -o thumb_template.png "$THUMB_TEMPLATE_URL"
 
 echo "== Baixando áudios =="
 echo "$AUDIO_URLS_JSON" | jq -r '.[]' | nl -w2 -nrz | while read -r idx url; do
@@ -116,13 +121,11 @@ gerar_short "$INICIO_SHORT_1" "short_1.mp4"
 gerar_short "$INICIO_SHORT_2" "short_2.mp4"
 echo "== Shorts gerados =="
 ls -la short_1.mp4 short_2.mp4
-# ---------- 5. Gerar thumbnail customizada (nome do canal + duração) ----------
-# A base da thumbnail agora é um FRAME REAL tirado de dentro do vídeo já renderizado
-# (em vez de uma imagem estática solta), porque assim ela sai sempre com o mesmo
-# enquadramento/zoom que o vídeo final -- mais consistente entre execuções.
+# ---------- 5. Gerar thumbnail customizada (template fixo + selo de duração) ----------
+# A arte de fundo e o texto "Dormindo com Jesus" já vêm prontos no template (gerado
+# uma vez, reaproveitado em todo vídeo) -- aqui só desenhamos o selo com a duração,
+# que muda a cada execução.
 echo "== Gerando thumbnail customizada =="
-THUMB_TIME=$(echo "$DURACAO_ALVO_SEG * 0.15" | bc | cut -d. -f1)
-ffmpeg -y -ss "$THUMB_TIME" -i video_final.mp4 -frames:v 1 thumb_base.jpg -loglevel error
 
 if [ "$DURACAO_ALVO_SEG" -ge 3600 ]; then
   THUMB_HORAS=$(( DURACAO_ALVO_SEG / 3600 ))
@@ -136,13 +139,37 @@ else
   THUMB_MINUTOS=$(( DURACAO_ALVO_SEG / 60 ))
   DURACAO_TEXTO="${THUMB_MINUTOS} MINUTOS"
 fi
-# Texto com contorno + sombra em vez de caixa sólida -- fica legível sobre qualquer
-# fundo sem parecer uma faixa colada por cima da imagem.
-ffmpeg -y -i thumb_base.jpg \
-  -vf "scale=1280:720,\
-drawtext=fontfile=${FONT}:text='DORMINDO COM JESUS':fontsize=76:fontcolor=white:borderw=10:bordercolor=black@0.85:shadowx=3:shadowy=3:shadowcolor=black@0.6:x=(w-text_w)/2:y=44,\
-drawtext=fontfile=${FONT}:text='${DURACAO_TEXTO}':fontsize=58:fontcolor=white:borderw=8:bordercolor=black@0.85:shadowx=3:shadowy=3:shadowcolor=black@0.6:x=w-text_w-36:y=h-text_h-32" \
-  -frames:v 1 thumbnail.jpg -loglevel error
+# Composição em camadas via Python/Pillow: texto "bolha" colorido por palavra
+# (uma cor por palavra, contorno grosso, sombra) + selo arredondado de duração --
+# no estilo dos canais de referência do nicho, em vez de texto simples de uma cor só.
+cat > make_thumbnail.py << 'PYEOF'
+import sys
+from PIL import Image, ImageDraw, ImageFont
+
+def rounded_badge(base_img, text, font, xy_bottom_right, pad=26,
+                   fill=(30, 20, 60, 235), text_color=(255, 255, 255)):
+    tmp = Image.new("RGBA", base_img.size, (0, 0, 0, 0))
+    d = ImageDraw.Draw(tmp)
+    bbox = d.textbbox((0, 0), text, font=font)
+    tw, th = bbox[2] - bbox[0], bbox[3] - bbox[1]
+    box_w, box_h = tw + pad * 2, th + pad * 2
+    x2, y2 = xy_bottom_right
+    x1, y1 = x2 - box_w, y2 - box_h
+    d.rounded_rectangle([x1, y1, x2, y2], radius=box_h / 2, fill=fill)
+    d.text((x1 + pad, y1 + pad - bbox[1]), text, font=font, fill=text_color)
+    base_img.alpha_composite(tmp)
+
+def main():
+    template_path, duracao_texto, font_path, out_path = sys.argv[1:5]
+    base = Image.open(template_path).convert("RGBA").resize((1280, 720))
+    font_badge = ImageFont.truetype(font_path, 44)
+    rounded_badge(base, duracao_texto, font_badge, xy_bottom_right=(1280 - 34, 720 - 28))
+    base.convert("RGB").save(out_path, quality=92)
+
+if __name__ == "__main__":
+    main()
+PYEOF
+python3 make_thumbnail.py thumb_template.png "$DURACAO_TEXTO" "$FONT" thumbnail.jpg
 echo "== Thumbnail gerada =="
 ls -la thumbnail.jpg
 # ---------- 6. Gerar vinheta de CTA (convite pra se inscrever) e anexar ao final do vídeo ----------
