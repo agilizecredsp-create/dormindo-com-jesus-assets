@@ -14,7 +14,17 @@ WORKDIR="render_work"
 rm -rf "$WORKDIR" && mkdir -p "$WORKDIR"
 cd "$WORKDIR"
 XFADE_DUR=0.5
-FONT="/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf"
+
+# ---------- 0. Baixar fonte mais "amigável" (estilo infantil, arredondada) ----------
+# Usada na thumbnail e na vinheta de CTA. Se o download falhar por qualquer motivo
+# (rede instável no runner), cai de volta pra DejaVu Bold (já vem instalada no ubuntu-latest).
+FONT="fonte_titulo.ttf"
+curl -sL -o "$FONT" "https://raw.githubusercontent.com/google/fonts/main/ofl/baloo2/Baloo2%5Bwght%5D.ttf" || true
+if [ ! -s "$FONT" ]; then
+  echo "Aviso: download da fonte Baloo 2 falhou, usando DejaVu Sans Bold como fallback"
+  FONT="/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf"
+fi
+
 echo "== Baixando áudios =="
 echo "$AUDIO_URLS_JSON" | jq -r '.[]' | nl -w2 -nrz | while read -r idx url; do
   curl -sL "$url" -o "audio_${idx}.mp3"
@@ -107,8 +117,13 @@ gerar_short "$INICIO_SHORT_2" "short_2.mp4"
 echo "== Shorts gerados =="
 ls -la short_1.mp4 short_2.mp4
 # ---------- 5. Gerar thumbnail customizada (nome do canal + duração) ----------
+# A base da thumbnail agora é um FRAME REAL tirado de dentro do vídeo já renderizado
+# (em vez de uma imagem estática solta), porque assim ela sai sempre com o mesmo
+# enquadramento/zoom que o vídeo final -- mais consistente entre execuções.
 echo "== Gerando thumbnail customizada =="
-THUMB_IMG="img_01.png"
+THUMB_TIME=$(echo "$DURACAO_ALVO_SEG * 0.15" | bc | cut -d. -f1)
+ffmpeg -y -ss "$THUMB_TIME" -i video_final.mp4 -frames:v 1 thumb_base.jpg -loglevel error
+
 if [ "$DURACAO_ALVO_SEG" -ge 3600 ]; then
   THUMB_HORAS=$(( DURACAO_ALVO_SEG / 3600 ))
   THUMB_MIN_REST=$(( (DURACAO_ALVO_SEG % 3600) / 60 ))
@@ -121,23 +136,26 @@ else
   THUMB_MINUTOS=$(( DURACAO_ALVO_SEG / 60 ))
   DURACAO_TEXTO="${THUMB_MINUTOS} MINUTOS"
 fi
-ffmpeg -y -i "$THUMB_IMG" \
+# Texto com contorno + sombra em vez de caixa sólida -- fica legível sobre qualquer
+# fundo sem parecer uma faixa colada por cima da imagem.
+ffmpeg -y -i thumb_base.jpg \
   -vf "scale=1280:720,\
-drawtext=fontfile=${FONT}:text='DORMINDO COM JESUS':fontsize=68:fontcolor=white:box=1:boxcolor=black@0.55:boxborderw=18:x=(w-text_w)/2:y=50,\
-drawtext=fontfile=${FONT}:text='${DURACAO_TEXTO}':fontsize=54:fontcolor=white:box=1:boxcolor=black@0.6:boxborderw=15:x=w-text_w-40:y=h-text_h-40" \
+drawtext=fontfile=${FONT}:text='DORMINDO COM JESUS':fontsize=76:fontcolor=white:borderw=10:bordercolor=black@0.85:shadowx=3:shadowy=3:shadowcolor=black@0.6:x=(w-text_w)/2:y=44,\
+drawtext=fontfile=${FONT}:text='${DURACAO_TEXTO}':fontsize=58:fontcolor=white:borderw=8:bordercolor=black@0.85:shadowx=3:shadowy=3:shadowcolor=black@0.6:x=w-text_w-36:y=h-text_h-32" \
   -frames:v 1 thumbnail.jpg -loglevel error
 echo "== Thumbnail gerada =="
 ls -la thumbnail.jpg
 # ---------- 6. Gerar vinheta de CTA (convite pra se inscrever) e anexar ao final do vídeo ----------
 # A vinheta entra só no vídeo principal, depois que os Shorts já foram cortados (passo 4),
-# pra não interferir no conteúdo/timing dos Shorts.
+# pra não interferir no conteúdo/timing dos Shorts. Mesmo estilo de texto da thumbnail
+# (contorno + sombra, sem caixa) pra manter a identidade visual consistente.
 echo "== Gerando vinheta de inscrição (CTA) =="
 CTA_DUR=5
 CTA_IMG="img_01.png"
 ffmpeg -y -loop 1 -i "$CTA_IMG" -f lavfi -i anullsrc=channel_layout=stereo:sample_rate=44100 -t "$CTA_DUR" \
   -vf "scale=1920:1080,fps=25,\
-drawtext=fontfile=${FONT}:text='Inscreva-se no canal!':fontsize=90:fontcolor=white:box=1:boxcolor=black@0.6:boxborderw=20:x=(w-text_w)/2:y=(h-text_h)/2-60,\
-drawtext=fontfile=${FONT}:text='Dormindo com Jesus':fontsize=60:fontcolor=white:box=1:boxcolor=black@0.6:boxborderw=15:x=(w-text_w)/2:y=(h-text_h)/2+60,\
+drawtext=fontfile=${FONT}:text='Inscreva-se no canal!':fontsize=92:fontcolor=white:borderw=12:bordercolor=black@0.85:shadowx=4:shadowy=4:shadowcolor=black@0.6:x=(w-text_w)/2:y=(h-text_h)/2-60,\
+drawtext=fontfile=${FONT}:text='Dormindo com Jesus':fontsize=62:fontcolor=white:borderw=9:bordercolor=black@0.85:shadowx=3:shadowy=3:shadowcolor=black@0.6:x=(w-text_w)/2:y=(h-text_h)/2+70,\
 fade=t=in:st=0:d=0.5,fade=t=out:st=$(echo "$CTA_DUR - 0.5" | bc):d=0.5" \
   -c:v libx264 -preset veryfast -pix_fmt yuv420p -c:a aac -shortest vinheta.mp4 -loglevel error
 echo "== Anexando vinheta ao final do vídeo principal =="
