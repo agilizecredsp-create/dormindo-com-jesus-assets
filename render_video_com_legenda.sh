@@ -25,6 +25,17 @@ fi
 echo "== Instalando Pillow (thumbnail) e faster-whisper (legenda karaokê) =="
 pip install pillow faster-whisper --break-system-packages --quiet 2>/dev/null || pip install pillow faster-whisper --quiet
 
+# Registra a fonte no fontconfig, senao a libass (usada no filtro ass= mais abaixo)
+# nao acha "Baloo 2" pelo nome e cai silenciosamente numa fonte generica do sistema.
+if [ "$FONT" = "fonte_titulo.ttf" ]; then
+  mkdir -p ~/.fonts
+  cp "$FONT" ~/.fonts/
+  fc-cache -f ~/.fonts > /dev/null 2>&1
+  ASS_FONT_NAME="Baloo 2"
+else
+  ASS_FONT_NAME="DejaVu Sans"
+fi
+
 echo "== Baixando template fixo da thumbnail =="
 THUMB_TEMPLATE_URL="https://raw.githubusercontent.com/agilizecredsp-create/dormindo-com-jesus-assets/main/ChatGPT%20Image%2019%20de%20jul.%20de%202026,%2011_09_25.png"
 curl -sL -o thumb_template.png "$THUMB_TEMPLATE_URL"
@@ -136,14 +147,28 @@ ScaledBorderAndShadow: yes
 
 [V4+ Styles]
 Format: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, OutlineColour, BackColour, Bold, Italic, Underline, StrikeOut, ScaleX, ScaleY, Spacing, Angle, BorderStyle, Outline, Shadow, Alignment, MarginL, MarginR, MarginV, Encoding
-Style: Karaoke,Baloo 2,72,&H0000FFFF,&H000000FF,&H00000000,&H64000000,1,0,0,0,100,100,0,0,1,4,2,2,80,80,90,1
+Style: Karaoke,Baloo 2,78,&H00FFFFFF,&H00FFFFFF,&H00000000,&H64000000,1,0,0,0,100,100,0,0,1,5,2,2,80,80,90,1
 
 [Events]
 Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
 """
 
+# Paleta de cores vibrantes (formato ASS: &HBBGGRR&, ou seja, azul-verde-vermelho
+# na ordem invertida do RGB comum) -- cada palavra vai puxar a proxima cor da lista,
+# ciclando, pra dar aquele visual "bolha colorida" tipo canais infantis de referencia.
+PALETA = [
+    "&H1ED6FF&",  # amarelo-dourado
+    "&H27B7FF&",  # laranja
+    "&H6BC9FF&",  # rosa-choque
+    "&H4FD16C&",  # verde
+    "&HF2C40E&",  # azul-ciano
+    "&HE383C5&",  # roxo/lilas
+    "&H4747F0&",  # vermelho-coral
+]
+
 linhas_evento = []
 tempo_global = 0.0  # onde essa repeticao da faixa comeca na linha do tempo final
+indice_cor_global = [0]  # lista de 1 item soh pra poder alterar de dentro da funcao
 
 def emitir_linha(grupo_palavras, offset_abs_inicio_faixa):
     """grupo_palavras: lista de palavras (com start/end relativos ao inicio da faixa).
@@ -158,7 +183,11 @@ def emitir_linha(grupo_palavras, offset_abs_inicio_faixa):
     partes_karaoke = ""
     for p in grupo_palavras:
         dur_cs = max(1, int(round((p["end"] - p["start"]) * 100)))
-        partes_karaoke += f"{{\\k{dur_cs}}}{p['text']} "
+        cor = PALETA[indice_cor_global[0] % len(PALETA)]
+        indice_cor_global[0] += 1
+        # \2c = cor ANTES de ser cantada (branco, "apagada")
+        # \1c = cor DEPOIS de cantada (a cor vibrante da paleta, "acende" a palavra)
+        partes_karaoke += f"{{\\2c&HFFFFFF&\\1c{cor}\\k{dur_cs}}}{p['text']} "
     linhas_evento.append(
         f"Dialogue: 0,{fmt_ass_time(inicio_abs)},{fmt_ass_time(fim_abs)},Karaoke,,0,0,0,,{partes_karaoke.strip()}"
     )
@@ -229,7 +258,7 @@ eval ffmpeg -y $INPUTS -filter_complex \"$FILTER\" -map \"[vfinal]\" -c:v libx26
 
 # ---------- 4. Juntar áudio + vídeo + QUEIMAR LEGENDA (reencode, nao da mais pra usar -c:v copy) ----------
 echo "== Juntando áudio, vídeo e legenda karaokê =="
-ffmpeg -y -i video_sem_audio.mp4 -i audio_final.m4a -vf "ass=legendas.ass" \
+ffmpeg -y -i video_sem_audio.mp4 -i audio_final.m4a -vf "ass=legendas.ass:fontsdir=$(realpath ~/.fonts 2>/dev/null || echo /usr/share/fonts)" \
   -c:v libx264 -preset veryfast -pix_fmt yuv420p -c:a aac -shortest video_final.mp4 -loglevel error
 echo "== Concluído =="
 ffprobe -v error -show_entries format=duration -of default=noprint_wrappers=1:nokey=1 video_final.mp4
