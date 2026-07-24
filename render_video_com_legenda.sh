@@ -46,10 +46,17 @@ echo "Total de imagens: $NUM_IMAGENS"
 # Faixas instrumentais simplesmente nao geram palavras (fica sem legenda ali).
 echo "== Transcrevendo faixas com faster-whisper (timestamps por palavra) =="
 cat > transcrever.py << 'PYEOF'
-import sys, json, glob
+import sys, json, glob, re
 from faster_whisper import WhisperModel
 
-model = WhisperModel("base", device="cpu", compute_type="int8")
+# Modelo "small" em vez de "base": lida bem melhor com voz cantada/melodia
+# (o "base" tende a "desistir" de transcrever trechos cantados e inserir
+# marcadores tipo [musica]/[canto] no lugar da palavra real).
+model = WhisperModel("small", device="cpu", compute_type="int8")
+
+# Padrao pra descartar marcadores de som nao-verbal que o Whisper as vezes
+# insere no lugar de uma palavra real (ex: [musica], [canto], [aplausos]).
+PADRAO_MARCADOR = re.compile(r'^\[.*\]$|^\(.*\)$')
 
 resultado = {}
 for audio_file in sorted(glob.glob("audio_*.mp3")):
@@ -63,7 +70,10 @@ for audio_file in sorted(glob.glob("audio_*.mp3")):
         if seg.no_speech_prob > 0.6:
             continue  # trecho provavelmente sem voz (instrumental) -- descarta
         for w in seg.words:
-            palavras.append({"start": w.start, "end": w.end, "text": w.word.strip()})
+            texto = w.word.strip()
+            if not texto or PADRAO_MARCADOR.match(texto):
+                continue  # descarta marcador tipo [musica]/[canto] -- nao e letra real
+            palavras.append({"start": w.start, "end": w.end, "text": texto})
     resultado[audio_file] = palavras
     print(f"  {len(palavras)} palavras detectadas")
 
