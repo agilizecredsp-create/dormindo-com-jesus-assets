@@ -1,0 +1,33 @@
+name: Render Video com Legenda Karaoke
+on:
+  repository_dispatch:
+    types: [render-video-legenda]
+jobs:
+  render:
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+      - name: Instalar FFmpeg
+        run: sudo apt-get update && sudo apt-get install -y ffmpeg
+      - name: Rodar script de renderização com legenda
+        env:
+          AUDIO_URLS_JSON: ${{ toJson(github.event.client_payload.audioUrls) }}
+          IMAGE_URLS_JSON: ${{ toJson(github.event.client_payload.imageUrls) }}
+          DURACAO_ALVO_SEG: ${{ github.event.client_payload.duracaoAlvoSegundos }}
+        run: |
+          chmod +x render_video_com_legenda.sh
+          ./render_video_com_legenda.sh
+      - name: Publicar vídeo como Release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          TAG="video-${{ github.event.client_payload.correlationId }}"
+          gh release create "$TAG" \
+            render_work/video_final.mp4 \
+            render_work/short_1.mp4 \
+            render_work/short_2.mp4 \
+            render_work/thumbnail.jpg \
+            --title "$TAG" \
+            --notes "Render automático via N8N (com legenda karaoke) - ${{ github.event.client_payload.correlationId }}"
