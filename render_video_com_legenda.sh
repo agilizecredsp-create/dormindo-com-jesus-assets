@@ -226,27 +226,50 @@ echo "$DURACAO_ALVO_SEG" > duracao_alvo.txt
 python3 gerar_ass.py
 
 # ---------- 3. Montar o vídeo (imagens em loop com zoom + crossfade) ----------
+# Em vez de mostrar as 25 imagens UMA vez cada (o que faz cada imagem ficar
+# minutos parada na tela num video longo), aqui repetimos o CICLO de imagens
+# varias vezes ate preencher a duracao alvo -- a tela troca de cena com
+# bem mais frequencia, sem precisar de nenhuma imagem nova (zero custo extra).
+# Cada imagem unica ainda e renderizada (com zoom) UMA SO VEZ; o arquivo
+# resultante e reaproveitado nas repeticoes seguintes do ciclo, entao o
+# tempo de render nao aumenta proporcionalmente ao numero de ciclos.
 echo "== Gerando segmentos de imagem =="
-PERDA_TOTAL=$(echo "($NUM_IMAGENS - 1) * $XFADE_DUR" | bc -l)
+DURACAO_POR_IMAGEM_ALVO=45  # segundos -- ajuste este numero pra mudar o ritmo das trocas de cena
+CICLO_DURACAO=$(echo "$NUM_IMAGENS * $DURACAO_POR_IMAGEM_ALVO" | bc -l)
+CICLOS=$(echo "($DURACAO_ALVO_SEG / $CICLO_DURACAO) + 1" | bc)
+NUM_SEGMENTOS=$(( NUM_IMAGENS * CICLOS ))
+echo "Ciclos de imagens necessarios: $CICLOS (total de $NUM_SEGMENTOS trocas de cena)"
+
+PERDA_TOTAL=$(echo "($NUM_SEGMENTOS - 1) * $XFADE_DUR" | bc -l)
 DURACAO_COM_COMPENSACAO=$(echo "$DURACAO_ALVO_SEG + $PERDA_TOTAL" | bc -l)
-DURACAO_POR_IMAGEM=$(echo "$DURACAO_COM_COMPENSACAO / $NUM_IMAGENS" | bc -l)
-echo "Duração por imagem (com compensação de transição): ${DURACAO_POR_IMAGEM}s"
-INPUTS=""
+DURACAO_POR_IMAGEM=$(echo "$DURACAO_COM_COMPENSACAO / $NUM_SEGMENTOS" | bc -l)
+echo "Duração real por cena (com compensação de transição): ${DURACAO_POR_IMAGEM}s"
+
+# Renderiza cada imagem UNICA uma unica vez, com zoom, na duracao calculada.
 for ((i=1; i<=NUM_IMAGENS; i++)); do
   IDX=$(printf "%02d" "$i")
   IMG_FILE="img_${IDX}.png"
   ffmpeg -y -loop 1 -i "$IMG_FILE" -t "$DURACAO_POR_IMAGEM" \
     -vf "scale=1920:1080,zoompan=z='min(zoom+0.0008,1.3)':d=$(echo "$DURACAO_POR_IMAGEM * 25" | bc | cut -d. -f1):s=1920x1080:fps=25" \
     -c:v libx264 -preset veryfast -pix_fmt yuv420p "seg_${IDX}.mp4" -loglevel error
+done
+
+# Monta a lista de inputs do ffmpeg repetindo o CICLO de imagens quantas
+# vezes forem necessarias (referencia o mesmo arquivo seg_XX.mp4 varias vezes).
+INPUTS=""
+for ((n=1; n<=NUM_SEGMENTOS; n++)); do
+  IMG_INDEX=$(( ((n - 1) % NUM_IMAGENS) + 1 ))
+  IDX=$(printf "%02d" "$IMG_INDEX")
   INPUTS="$INPUTS -i seg_${IDX}.mp4"
 done
+
 echo "== Montando crossfade entre segmentos =="
 FILTER=""
 OFFSET=$(echo "$DURACAO_POR_IMAGEM - $XFADE_DUR" | bc -l)
 PREV="[0:v]"
-for ((n=1; n<NUM_IMAGENS; n++)); do
+for ((n=1; n<NUM_SEGMENTOS; n++)); do
   NEXT_LABEL="[v$n]"
-  if [ $n -eq $((NUM_IMAGENS-1)) ]; then
+  if [ $n -eq $((NUM_SEGMENTOS-1)) ]; then
     NEXT_LABEL="[vfinal]"
   fi
   FILTER="${FILTER}${PREV}[${n}:v]xfade=transition=fade:duration=${XFADE_DUR}:offset=${OFFSET}${NEXT_LABEL}; "
