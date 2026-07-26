@@ -226,7 +226,7 @@ echo "$DURACAO_ALVO_SEG" > duracao_alvo.txt
 python3 gerar_ass.py
 
 # ---------- 3. Montar o vídeo (imagens em loop com zoom + crossfade) ----------
-# Em vez de mostrar as 25 imagens UMA vez cada (o que faz cada imagem ficar
+# Em vez de mostrar as imagens do banco UMA vez cada (o que faz cada imagem ficar
 # minutos parada na tela num video longo), aqui repetimos o CICLO de imagens
 # varias vezes ate preencher a duracao alvo -- a tela troca de cena com
 # bem mais frequencia, sem precisar de nenhuma imagem nova (zero custo extra).
@@ -234,7 +234,7 @@ python3 gerar_ass.py
 # resultante e reaproveitado nas repeticoes seguintes do ciclo, entao o
 # tempo de render nao aumenta proporcionalmente ao numero de ciclos.
 echo "== Gerando segmentos de imagem =="
-DURACAO_POR_IMAGEM_ALVO=45  # segundos -- ajuste este numero pra mudar o ritmo das trocas de cena
+DURACAO_POR_IMAGEM_ALVO=20  # segundos -- reduzido de 45s pra 20s (26/07) pra trocar de cena mais rapido
 CICLO_DURACAO=$(echo "$NUM_IMAGENS * $DURACAO_POR_IMAGEM_ALVO" | bc -l)
 CICLOS=$(echo "($DURACAO_ALVO_SEG / $CICLO_DURACAO) + 1" | bc)
 NUM_SEGMENTOS=$(( NUM_IMAGENS * CICLOS ))
