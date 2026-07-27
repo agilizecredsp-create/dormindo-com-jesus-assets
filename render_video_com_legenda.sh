@@ -74,11 +74,16 @@ for audio_file in sorted(glob.glob("audio_*.mp3")):
     print(f"Transcrevendo {audio_file}...")
     segments, info = model.transcribe(
         audio_file, word_timestamps=True, language="pt",
-        vad_filter=True  # ignora trechos sem fala, reduz alucinacao em trechos instrumentais
+        vad_filter=True,  # ignora trechos sem fala, reduz alucinacao em trechos instrumentais
+        # Contexto ajuda o modelo a "esperar" letra de musica cantada em vez de fala falada,
+        # reduzindo tanto descarte indevido de trechos cantados quanto alucinacao de palavras.
+        initial_prompt="Letra de musica crista infantil em portugues, cantada suavemente, estilo canção de ninar."
     )
     palavras = []
     for seg in segments:
-        if seg.no_speech_prob > 0.6:
+        # Limiar bem mais permissivo (era 0.6): canto sustentado/melodico costuma ser
+        # mal classificado como "sem fala" pelo modelo, descartando legenda real por engano.
+        if seg.no_speech_prob > 0.92:
             continue  # trecho provavelmente sem voz (instrumental) -- descarta
         for w in seg.words:
             texto = w.word.strip()
@@ -169,6 +174,7 @@ PALETA = [
 linhas_evento = []
 tempo_global = 0.0  # onde essa repeticao da faixa comeca na linha do tempo final
 indice_cor_global = [0]  # lista de 1 item soh pra poder alterar de dentro da funcao
+ultimo_fim_emitido = [0.0]  # garante que uma linha nova nunca comeca antes da anterior terminar
 
 def emitir_linha(grupo_palavras, offset_abs_inicio_faixa):
     """grupo_palavras: lista de palavras (com start/end relativos ao inicio da faixa).
@@ -179,7 +185,14 @@ def emitir_linha(grupo_palavras, offset_abs_inicio_faixa):
     fim_abs = offset_abs_inicio_faixa + grupo_palavras[-1]["end"]
     if inicio_abs >= DURACAO_ALVO:
         return
+    # Nunca deixa uma linha nova comecar antes da anterior ter sumido da tela --
+    # evita o efeito de "2 legendas" empilhadas ao mesmo tempo.
+    if inicio_abs < ultimo_fim_emitido[0]:
+        inicio_abs = ultimo_fim_emitido[0]
+    if inicio_abs >= fim_abs:
+        return
     fim_abs = min(fim_abs, DURACAO_ALVO)
+    ultimo_fim_emitido[0] = fim_abs
     partes_karaoke = ""
     for p in grupo_palavras:
         dur_cs = max(1, int(round((p["end"] - p["start"]) * 100)))
