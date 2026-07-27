@@ -40,13 +40,34 @@ echo "== Baixando template fixo da thumbnail =="
 THUMB_TEMPLATE_URL="https://raw.githubusercontent.com/agilizecredsp-create/dormindo-com-jesus-assets/main/ChatGPT%20Image%2019%20de%20jul.%20de%202026,%2011_09_25.png"
 curl -sL -o thumb_template.png "$THUMB_TEMPLATE_URL"
 
+# Baixa um arquivo com retry + validacao real: sem "--fail" o curl salva pagina de erro/
+# arquivo vazio como se fosse sucesso quando a URL falha (foi a causa de um travamento
+# real em 27/07 -- "Invalid PNG signature 0x00000000", imagem baixada corrompida/vazia
+# travou o ffmpeg por 1h30min ate estourar timeout). Agora falha alto e tenta de novo.
+baixar_com_retry() {
+  local url="$1"
+  local destino="$2"
+  local tentativas=3
+  local tentativa=1
+  while [ "$tentativa" -le "$tentativas" ]; do
+    if curl -sL --fail --max-time 30 -o "$destino" "$url" && [ -s "$destino" ]; then
+      return 0
+    fi
+    echo "  Aviso: falha ao baixar (tentativa $tentativa/$tentativas): $url"
+    tentativa=$((tentativa + 1))
+    sleep 2
+  done
+  echo "ERRO FATAL: nao foi possivel baixar apos $tentativas tentativas: $url"
+  exit 1
+}
+
 echo "== Baixando áudios =="
 echo "$AUDIO_URLS_JSON" | jq -r '.[]' | nl -w2 -nrz | while read -r idx url; do
-  curl -sL "$url" -o "audio_${idx}.mp3"
+  baixar_com_retry "$url" "audio_${idx}.mp3"
 done
 echo "== Baixando imagens =="
 echo "$IMAGE_URLS_JSON" | jq -r '.[]' | nl -w2 -nrz | while read -r idx url; do
-  curl -sL "$url" -o "img_${idx}.png"
+  baixar_com_retry "$url" "img_${idx}.png"
 done
 NUM_IMAGENS=$(echo "$IMAGE_URLS_JSON" | jq 'length')
 echo "Total de imagens: $NUM_IMAGENS"
