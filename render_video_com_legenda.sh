@@ -288,30 +288,74 @@ for ((i=1; i<=NUM_IMAGENS; i++)); do
     -c:v libx264 -preset veryfast -pix_fmt yuv420p "seg_${IDX}.mp4" -loglevel error
 done
 
-# Monta a lista de inputs do ffmpeg repetindo o CICLO de imagens quantas
-# vezes forem necessarias (referencia o mesmo arquivo seg_XX.mp4 varias vezes).
-INPUTS=""
-for ((n=1; n<=NUM_SEGMENTOS; n++)); do
-  IMG_INDEX=$(( ((n - 1) % NUM_IMAGENS) + 1 ))
-  IDX=$(printf "%02d" "$IMG_INDEX")
-  INPUTS="$INPUTS -i seg_${IDX}.mp4"
+# Monta o video em LOTES pequenos em vez de um unico ffmpeg gigante com todos
+# os NUM_SEGMENTOS segmentos encadeados num so filter_complex.
+#
+# Causa raiz de ~50% das falhas/cancelamentos observados (18/08/2026): com uma
+# duracao alvo de 90min e trocas de cena a cada 20s, NUM_SEGMENTOS passa de
+# 250-300. Um unico ffmpeg com esse tanto de inputs + ~275 filtros xfade
+# encadeados no mesmo grafico estoura memoria/CPU do runner gratuito do
+# GitHub Actions (2 nucleos, 7GB RAM) -- o job fica 10+ minutos sem nenhum
+# log (ffmpeg com -loglevel error nao emite progresso) ate o runner ser
+# desligado a forca pela infra do GitHub ("received a shutdown signal").
+#
+# Fix: processa BATCH_SIZE segmentos por vez (grafico de filtro pequeno e
+# rapido), gera um mp4 por lote, depois concatena os lotes com o demuxer
+# concat (-c copy, sem reencode, praticamente instantaneo). O crossfade
+# continua acontecendo normalmente DENTRO de cada lote; so nas bordas entre
+# lotes (a cada ~BATCH_SIZE cenas) vira corte seco em vez de crossfade --
+# troca imperceptivel num video de fundo pra dormir, e resolve o estouro de
+# recursos.
+BATCH_SIZE=10
+NUM_BATCHES=$(( (NUM_SEGMENTOS + BATCH_SIZE - 1) / BATCH_SIZE ))
+echo "== Montando segmentos em $NUM_BATCHES lotes de ate $BATCH_SIZE cenas (evita filtro gigante) =="
+
+> concat_batches_list.txt
+BATCH_IDX=0
+for ((start=1; start<=NUM_SEGMENTOS; start+=BATCH_SIZE)); do
+  BATCH_IDX=$((BATCH_IDX + 1))
+  end=$((start + BATCH_SIZE - 1))
+  if [ "$end" -gt "$NUM_SEGMENTOS" ]; then
+    end=$NUM_SEGMENTOS
+  fi
+  BATCH_COUNT=$((end - start + 1))
+  BATCH_OUT=$(printf "batch_%03d.mp4" "$BATCH_IDX")
+
+  if [ "$BATCH_COUNT" -eq 1 ]; then
+    # Lote com uma unica cena -- nao ha o que cruzar, so reaproveita o segmento.
+    IMG_INDEX=$(( ((start - 1) % NUM_IMAGENS) + 1 ))
+    IDX=$(printf "%02d" "$IMG_INDEX")
+    cp "seg_${IDX}.mp4" "$BATCH_OUT"
+  else
+    BATCH_INPUTS=""
+    for ((n=start; n<=end; n++)); do
+      IMG_INDEX=$(( ((n - 1) % NUM_IMAGENS) + 1 ))
+      IDX=$(printf "%02d" "$IMG_INDEX")
+      BATCH_INPUTS="$BATCH_INPUTS -i seg_${IDX}.mp4"
+    done
+
+    BATCH_FILTER=""
+    OFFSET=$(echo "$DURACAO_POR_IMAGEM - $XFADE_DUR" | bc -l)
+    PREV="[0:v]"
+    for ((i=1; i<BATCH_COUNT; i++)); do
+      NEXT_LABEL="[v$i]"
+      if [ "$i" -eq $((BATCH_COUNT-1)) ]; then
+        NEXT_LABEL="[vbatch]"
+      fi
+      BATCH_FILTER="${BATCH_FILTER}${PREV}[${i}:v]xfade=transition=fade:duration=${XFADE_DUR}:offset=${OFFSET}${NEXT_LABEL}; "
+      PREV="[v$i]"
+      OFFSET=$(echo "$OFFSET + $DURACAO_POR_IMAGEM - $XFADE_DUR" | bc -l)
+    done
+    BATCH_FILTER=${BATCH_FILTER%; }
+    eval ffmpeg -y $BATCH_INPUTS -filter_complex \"$BATCH_FILTER\" -map \"[vbatch]\" -c:v libx264 -preset veryfast -pix_fmt yuv420p "$BATCH_OUT" -loglevel error
+  fi
+
+  echo "file '$(pwd)/$BATCH_OUT'" >> concat_batches_list.txt
+  echo "  Lote $BATCH_IDX/$NUM_BATCHES pronto ($BATCH_COUNT cenas)"
 done
 
-echo "== Montando crossfade entre segmentos =="
-FILTER=""
-OFFSET=$(echo "$DURACAO_POR_IMAGEM - $XFADE_DUR" | bc -l)
-PREV="[0:v]"
-for ((n=1; n<NUM_SEGMENTOS; n++)); do
-  NEXT_LABEL="[v$n]"
-  if [ $n -eq $((NUM_SEGMENTOS-1)) ]; then
-    NEXT_LABEL="[vfinal]"
-  fi
-  FILTER="${FILTER}${PREV}[${n}:v]xfade=transition=fade:duration=${XFADE_DUR}:offset=${OFFSET}${NEXT_LABEL}; "
-  PREV="[v$n]"
-  OFFSET=$(echo "$OFFSET + $DURACAO_POR_IMAGEM - $XFADE_DUR" | bc -l)
-done
-FILTER=${FILTER%; }
-eval ffmpeg -y $INPUTS -filter_complex \"$FILTER\" -map \"[vfinal]\" -c:v libx264 -preset veryfast -pix_fmt yuv420p video_sem_audio.mp4 -loglevel error
+echo "== Concatenando lotes (corte seco entre lotes, sem reencode) =="
+ffmpeg -y -f concat -safe 0 -i concat_batches_list.txt -c copy video_sem_audio.mp4 -loglevel error
 
 # ---------- 4. Juntar áudio + vídeo + QUEIMAR LEGENDA (reencode, nao da mais pra usar -c:v copy) ----------
 echo "== Juntando áudio, vídeo e legenda karaokê =="
