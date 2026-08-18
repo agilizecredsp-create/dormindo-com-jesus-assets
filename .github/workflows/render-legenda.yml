@@ -5,7 +5,11 @@ on:
 jobs:
   render:
     runs-on: ubuntu-latest
-    timeout-minutes: 90
+    # 90min nao era suficiente mesmo apos o fix de lotes no script (18/08/2026):
+    # o job foi cancelado pelo proprio timeout as 95min, ainda dentro do passo
+    # de renderizacao. Repo publico = sem custo extra de minutos do Actions,
+    # entao so aumentar a folga em vez de tentar acelerar o render.
+    timeout-minutes: 180
     steps:
       - name: Checkout
         uses: actions/checkout@v4
