@@ -385,7 +385,8 @@ gerar_short() {
     -filter_complex "[0:v]split=2[bg][fg]; \
       [bg]scale=1080:1920,gblur=sigma=20,crop=1080:1920[bgblur]; \
       [fg]scale=1080:-2[fgscaled]; \
-      [bgblur][fgscaled]overlay=(W-w)/2:(H-h)/2" \
+      [bgblur][fgscaled]overlay=(W-w)/2:(H-h)/2[base]; \
+      [base]drawtext=fontfile=${FONT}:text='Inscreva-se e abencoe mais familias':fontsize=42:fontcolor=white:borderw=8:bordercolor=black@0.85:shadowx=3:shadowy=3:shadowcolor=black@0.6:x=(w-text_w)/2:y=140:enable='between(t\,0\,4)'" \
     -c:v libx264 -preset veryfast -pix_fmt yuv420p -c:a aac "$OUT" -loglevel error
 }
 gerar_short "$INICIO_SHORT_1" "short_1.mp4"
@@ -445,14 +446,16 @@ CTA_IMG="img_01.png"
 ffmpeg -y -loop 1 -i "$CTA_IMG" -f lavfi -i anullsrc=channel_layout=stereo:sample_rate=44100 -t "$CTA_DUR" \
   -vf "scale=1920:1080,fps=25,\
 drawtext=fontfile=${FONT}:text='Inscreva-se no canal!':fontsize=92:fontcolor=white:borderw=12:bordercolor=black@0.85:shadowx=4:shadowy=4:shadowcolor=black@0.6:x=(w-text_w)/2:y=(h-text_h)/2-60,\
-drawtext=fontfile=${FONT}:text='Dormindo com Jesus':fontsize=62:fontcolor=white:borderw=9:bordercolor=black@0.85:shadowx=3:shadowy=3:shadowcolor=black@0.6:x=(w-text_w)/2:y=(h-text_h)/2+70,\
+drawtext=fontfile=${FONT}:text='e ajude essa bencao a chegar em mais familias':fontsize=48:fontcolor=white:borderw=9:bordercolor=black@0.85:shadowx=3:shadowy=3:shadowcolor=black@0.6:x=(w-text_w)/2:y=(h-text_h)/2+70,\
 fade=t=in:st=0:d=0.5,fade=t=out:st=$(echo "$CTA_DUR - 0.5" | bc):d=0.5" \
   -c:v libx264 -preset veryfast -pix_fmt yuv420p -c:a aac -shortest vinheta.mp4 -loglevel error
-echo "== Anexando vinheta ao final do vídeo principal =="
-echo "file '$(pwd)/video_final.mp4'" > concat_cta_list.txt
+echo "== Anexando vinheta no inicio e no final do vídeo principal =="
+echo "file '$(pwd)/vinheta.mp4'" > concat_cta_list.txt
+echo "file '$(pwd)/video_final.mp4'" >> concat_cta_list.txt
 echo "file '$(pwd)/vinheta.mp4'" >> concat_cta_list.txt
 ffmpeg -y -f concat -safe 0 -i concat_cta_list.txt -c copy video_final_com_cta.mp4 -loglevel error
 mv video_final_com_cta.mp4 video_final.mp4
-echo "== Vídeo final com CTA e legenda pronto =="
+echo "== Vídeo final com CTA (inicio+fim) e legenda pronto =="
 ffprobe -v error -show_entries format=duration -of default=noprint_wrappers=1:nokey=1 video_final.mp4
 ls -la video_final.mp4 thumbnail.jpg short_1.mp4 short_2.mp4
+
