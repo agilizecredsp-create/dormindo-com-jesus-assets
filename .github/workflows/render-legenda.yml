@@ -14,16 +14,18 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
       - name: Instalar FFmpeg
-        # timeout curto + retry: essa etapa e trivial (normalmente ~20s) mas
-        # travou por horas em runners do GitHub Actions em pelo menos 2
-        # execucoes (18-19/08/2026), sem erro nenhum, so parada. Sem
-        # timeout-minutes aqui, uma trava desse tipo consumia o orcamento
-        # inteiro do job (180min) antes de qualquer coisa util rodar. Agora
-        # falha rapido (5min) e tenta de novo antes de desistir de vez.
-        timeout-minutes: 5
+        # 19/08/2026: log real mostrou que nao e trava (hang) -- e rede lenta
+        # de verdade no runner (~195 KB/s, "Fetched 11.4 MB in 58s"), baixando
+        # 94.1 MB / 99 pacotes pro apt-get install padrao (a maioria drivers
+        # de video/audio que o script nunca usa: i965-va-driver, mesa-va-drivers,
+        # libpulse0, libjack-jackd2-0, libsdl2 etc). --no-install-recommends
+        # corta esse excesso; timeout subiu de 5 pra 15min pra sobrar folga
+        # real em dia de rede ruim, mas sem voltar a comer o job inteiro (180min)
+        # como aconteceu quando nao tinha timeout nenhum aqui.
+        timeout-minutes: 15
         run: |
           for tentativa in 1 2 3; do
-            if sudo apt-get update && sudo apt-get install -y ffmpeg; then
+            if sudo apt-get update && sudo apt-get install -y --no-install-recommends ffmpeg; then
               exit 0
             fi
             echo "Tentativa $tentativa de instalar o FFmpeg falhou, tentando de novo..."
