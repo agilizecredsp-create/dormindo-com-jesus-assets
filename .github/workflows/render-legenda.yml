@@ -14,7 +14,23 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
       - name: Instalar FFmpeg
-        run: sudo apt-get update && sudo apt-get install -y ffmpeg
+        # timeout curto + retry: essa etapa e trivial (normalmente ~20s) mas
+        # travou por horas em runners do GitHub Actions em pelo menos 2
+        # execucoes (18-19/08/2026), sem erro nenhum, so parada. Sem
+        # timeout-minutes aqui, uma trava desse tipo consumia o orcamento
+        # inteiro do job (180min) antes de qualquer coisa util rodar. Agora
+        # falha rapido (5min) e tenta de novo antes de desistir de vez.
+        timeout-minutes: 5
+        run: |
+          for tentativa in 1 2 3; do
+            if sudo apt-get update && sudo apt-get install -y ffmpeg; then
+              exit 0
+            fi
+            echo "Tentativa $tentativa de instalar o FFmpeg falhou, tentando de novo..."
+            sleep 5
+          done
+          echo "ERRO: nao foi possivel instalar o FFmpeg apos 3 tentativas."
+          exit 1
       - name: Rodar script de renderização com legenda
         env:
           AUDIO_URLS_JSON: ${{ toJson(github.event.client_payload.audioUrls) }}
