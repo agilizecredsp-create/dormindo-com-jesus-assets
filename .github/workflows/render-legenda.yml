@@ -14,25 +14,21 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
       - name: Instalar FFmpeg
-        # 19/08/2026: log real mostrou que nao e trava (hang) -- e rede lenta
-        # de verdade no runner (~195 KB/s, "Fetched 11.4 MB in 58s"), baixando
-        # 94.1 MB / 99 pacotes pro apt-get install padrao (a maioria drivers
-        # de video/audio que o script nunca usa: i965-va-driver, mesa-va-drivers,
-        # libpulse0, libjack-jackd2-0, libsdl2 etc). --no-install-recommends
-        # corta esse excesso; timeout subiu de 5 pra 15min pra sobrar folga
-        # real em dia de rede ruim, mas sem voltar a comer o job inteiro (180min)
-        # como aconteceu quando nao tinha timeout nenhum aqui.
-        timeout-minutes: 15
+        # 19/08/2026: apt-get install (mesmo com --no-install-recommends) segue
+        # instavel -- depende do mirror azure.archive.ubuntu.com do runner, que
+        # as vezes trava minutos (ora 11s, ora estoura os 15min). Trocado pra
+        # baixar um build estatico direto de uma release do GitHub (mesma rede
+        # do runner, sem depender de apt/dpkg/mirror nenhum) -- elimina essa
+        # classe inteira de falha.
+        timeout-minutes: 5
         run: |
-          for tentativa in 1 2 3; do
-            if sudo apt-get update && sudo apt-get install -y --no-install-recommends ffmpeg; then
-              exit 0
-            fi
-            echo "Tentativa $tentativa de instalar o FFmpeg falhou, tentando de novo..."
-            sleep 5
-          done
-          echo "ERRO: nao foi possivel instalar o FFmpeg apos 3 tentativas."
-          exit 1
+          curl -sL -o /tmp/ffmpeg.tar.xz "https://github.com/BtbN/FFmpeg-Builds/releases/download/latest/ffmpeg-master-latest-linux64-gpl.tar.xz"
+          mkdir -p /tmp/ffmpeg-extract
+          tar -xJf /tmp/ffmpeg.tar.xz -C /tmp/ffmpeg-extract --strip-components=1
+          sudo mv /tmp/ffmpeg-extract/bin/ffmpeg /usr/local/bin/ffmpeg
+          sudo mv /tmp/ffmpeg-extract/bin/ffprobe /usr/local/bin/ffprobe
+          sudo chmod +x /usr/local/bin/ffmpeg /usr/local/bin/ffprobe
+          ffmpeg -version
       - name: Rodar script de renderização com legenda
         env:
           AUDIO_URLS_JSON: ${{ toJson(github.event.client_payload.audioUrls) }}
