@@ -359,7 +359,7 @@ ffmpeg -y -f concat -safe 0 -i concat_batches_list.txt -c copy video_sem_audio.m
 
 # ---------- 4. Juntar áudio + vídeo + QUEIMAR LEGENDA (reencode, nao da mais pra usar -c:v copy) ----------
 echo "== Juntando áudio, vídeo e legenda karaokê =="
-ffmpeg -y -i video_sem_audio.mp4 -i audio_final.m4a -vf "ass=legendas.ass:fontsdir=$(realpath ~/.fonts 2>/dev/null || echo /usr/share/fonts)" \
+ffmpeg -y -i video_sem_audio.mp4 -i audio_final.m4a -vf "ass=legendas.ass:fontsdir=$(realpath ~/.fonts 2>/dev/null || echo /usr/share/fonts),drawtext=fontfile=${FONT}:text='Inscreva-se':fontsize=36:fontcolor=white@0.85:borderw=4:bordercolor=black@0.6:x=w-tw-40:y=40" \
   -c:v libx264 -preset veryfast -pix_fmt yuv420p -c:a aac -shortest video_final.mp4 -loglevel error
 echo "== Concluído =="
 ffprobe -v error -show_entries format=duration -of default=noprint_wrappers=1:nokey=1 video_final.mp4
