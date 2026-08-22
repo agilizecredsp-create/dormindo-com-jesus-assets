@@ -72,6 +72,52 @@ done
 NUM_IMAGENS=$(echo "$IMAGE_URLS_JSON" | jq 'length')
 echo "Total de imagens: $NUM_IMAGENS"
 
+# ---------- 0.5 Baixar narracao das afirmacoes e montar o bloco inicial ----------
+echo "== Baixando narracao das afirmacoes =="
+baixar_com_retry "$NARRACAO_URL" narracao.mp3
+DURACAO_NARRACAO=$(ffprobe -v error -show_entries format=duration -of default=noprint_wrappers=1:nokey=1 narracao.mp3)
+echo "Duracao da narracao: ${DURACAO_NARRACAO}s"
+
+echo "== Montando texto sincronizado das afirmacoes (peso proporcional ao tamanho de cada frase) =="
+echo "$AFIRMACOES_JSON" > afirmacoes.json
+cat > montar_afirmacoes.py << 'PYEOF'
+import json, os
+
+with open("afirmacoes.json", encoding="utf-8") as f:
+    afirmacoes = json.load(f)
+
+duracao_total = float(os.environ["DURACAO_NARRACAO"])
+font_path = os.environ["FONT_PATH"]
+pesos = [len(a) for a in afirmacoes]
+soma_pesos = sum(pesos)
+
+linhas_filtro = []
+t = 0.0
+for texto, peso in zip(afirmacoes, pesos):
+    dur = duracao_total * (peso / soma_pesos)
+    inicio = t
+    fim = t + dur
+    t = fim
+    texto_escapado = texto.replace("'", "’").replace(":", "\\:").replace(",", "\\,")
+    linhas_filtro.append(
+        f"drawtext=fontfile={font_path}:text='{texto_escapado}':fontsize=64:fontcolor=white:"
+        f"borderw=10:bordercolor=black@0.8:shadowx=3:shadowy=3:shadowcolor=black@0.6:"
+        f"x=(w-text_w)/2:y=(h-text_h)/2:enable='between(t\\,{inicio:.2f}\\,{fim:.2f})'"
+    )
+
+with open("afirmacoes_filtro.txt", "w", encoding="utf-8") as f:
+    f.write(",".join(linhas_filtro))
+PYEOF
+FONT_PATH="$FONT" DURACAO_NARRACAO="$DURACAO_NARRACAO" python3 montar_afirmacoes.py
+AFIRMACOES_FILTRO=$(cat afirmacoes_filtro.txt)
+
+echo "== Renderizando bloco de afirmacoes =="
+ffmpeg -y -loop 1 -i img_01.png -i narracao.mp3 -t "$DURACAO_NARRACAO" \
+  -vf "scale=1920:1080,fps=25,zoompan=z='min(zoom+0.0004,1.15)':d=$(echo "$DURACAO_NARRACAO * 25" | bc | cut -d. -f1):s=1920x1080:fps=25,${AFIRMACOES_FILTRO}" \
+  -c:v libx264 -preset veryfast -pix_fmt yuv420p -c:a aac -ar 44100 -shortest afirmacoes.mp4 -loglevel error
+echo "== Bloco de afirmacoes pronto =="
+ls -la afirmacoes.mp4
+
 # ---------- 1. Transcrever CADA FAIXA ÚNICA com timestamps por palavra ----------
 # So transcreve as faixas base (antes do loop), que sao bem mais curtas que os
 # 90 minutos finais -- economiza muito tempo de execucao no runner.
@@ -449,8 +495,9 @@ drawtext=fontfile=${FONT}:text='Inscreva-se no canal!':fontsize=92:fontcolor=whi
 drawtext=fontfile=${FONT}:text='e ajude essa bencao a chegar em mais familias':fontsize=48:fontcolor=white:borderw=9:bordercolor=black@0.85:shadowx=3:shadowy=3:shadowcolor=black@0.6:x=(w-text_w)/2:y=(h-text_h)/2+70,\
 fade=t=in:st=0:d=0.5,fade=t=out:st=$(echo "$CTA_DUR - 0.5" | bc):d=0.5" \
   -c:v libx264 -preset veryfast -pix_fmt yuv420p -c:a aac -shortest vinheta.mp4 -loglevel error
-echo "== Anexando vinheta no inicio e no final do vídeo principal =="
-echo "file '$(pwd)/vinheta.mp4'" > concat_cta_list.txt
+echo "== Anexando afirmacoes + vinheta no inicio e vinheta no final do vídeo principal =="
+echo "file '$(pwd)/afirmacoes.mp4'" > concat_cta_list.txt
+echo "file '$(pwd)/vinheta.mp4'" >> concat_cta_list.txt
 echo "file '$(pwd)/video_final.mp4'" >> concat_cta_list.txt
 echo "file '$(pwd)/vinheta.mp4'" >> concat_cta_list.txt
 ffmpeg -y -f concat -safe 0 -i concat_cta_list.txt -c copy video_final_com_cta.mp4 -loglevel error
