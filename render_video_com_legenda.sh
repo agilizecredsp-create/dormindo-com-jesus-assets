@@ -9,6 +9,10 @@ set -e
 #   AUDIO_URLS_JSON   -> ex: '["https://.../audio1.mp3","https://.../audio2.mp3"]'
 #   IMAGE_URLS_JSON   -> ex: '["https://.../imagem-01.png","https://.../imagem-02.png"]'
 #   DURACAO_ALVO_SEG  -> ex: 5400 (90 minutos)
+#   AFIRMACOES_JSON   -> ex: '["Você pode.","Você é forte."]'
+#   NARRACAO_URL      -> URL do mp3 da narração das afirmações (gerado por TTS)
+#   MODO_AFIRMACAO    -> "true" pro vídeo especial 100% afirmação (sem música, sem
+#                        legenda karaokê); vazio/ausente pro vídeo normal
 # ============================================================
 WORKDIR="render_work"
 rm -rf "$WORKDIR" && mkdir -p "$WORKDIR"
@@ -61,10 +65,6 @@ baixar_com_retry() {
   exit 1
 }
 
-echo "== Baixando áudios =="
-echo "$AUDIO_URLS_JSON" | jq -r '.[]' | nl -w2 -nrz | while read -r idx url; do
-  baixar_com_retry "$url" "audio_${idx}.mp3"
-done
 echo "== Baixando imagens =="
 echo "$IMAGE_URLS_JSON" | jq -r '.[]' | nl -w2 -nrz | while read -r idx url; do
   baixar_com_retry "$url" "img_${idx}.png"
@@ -72,58 +72,171 @@ done
 NUM_IMAGENS=$(echo "$IMAGE_URLS_JSON" | jq 'length')
 echo "Total de imagens: $NUM_IMAGENS"
 
-# ---------- 0.5 Baixar narracao das afirmacoes e montar o bloco inicial ----------
 echo "== Baixando narracao das afirmacoes =="
 baixar_com_retry "$NARRACAO_URL" narracao.mp3
 DURACAO_NARRACAO=$(ffprobe -v error -show_entries format=duration -of default=noprint_wrappers=1:nokey=1 narracao.mp3)
 echo "Duracao da narracao: ${DURACAO_NARRACAO}s"
-
-echo "== Montando texto sincronizado das afirmacoes (peso proporcional ao tamanho de cada frase) =="
 echo "$AFIRMACOES_JSON" > afirmacoes.json
+
+# ---------- Gerador de texto sincronizado (peso proporcional ao tamanho de cada frase) ----------
+# Reaproveitado tanto pro bloco de introducao (uma volta so) quanto pro modo
+# 100% afirmacao (repete em loop ate cobrir a duracao alvo inteira).
 cat > montar_afirmacoes.py << 'PYEOF'
-import json, os
+import json, os, sys
 
 with open("afirmacoes.json", encoding="utf-8") as f:
     afirmacoes = json.load(f)
 
-duracao_total = float(os.environ["DURACAO_NARRACAO"])
+duracao_narracao = float(os.environ["DURACAO_NARRACAO"])
+duracao_max = float(os.environ.get("DURACAO_MAX", duracao_narracao))
 font_path = os.environ["FONT_PATH"]
 pesos = [len(a) for a in afirmacoes]
 soma_pesos = sum(pesos)
 
 linhas_filtro = []
-t = 0.0
-for texto, peso in zip(afirmacoes, pesos):
-    dur = duracao_total * (peso / soma_pesos)
-    inicio = t
-    fim = t + dur
-    t = fim
-    texto_escapado = texto.replace("'", "’").replace(":", "\\:").replace(",", "\\,")
-    linhas_filtro.append(
-        f"drawtext=fontfile={font_path}:text='{texto_escapado}':fontsize=64:fontcolor=white:"
-        f"borderw=10:bordercolor=black@0.8:shadowx=3:shadowy=3:shadowcolor=black@0.6:"
-        f"x=(w-text_w)/2:y=(h-text_h)/2:enable='between(t\\,{inicio:.2f}\\,{fim:.2f})'"
-    )
+loop_offset = 0.0
+while loop_offset < duracao_max:
+    t = loop_offset
+    for texto, peso in zip(afirmacoes, pesos):
+        dur = duracao_narracao * (peso / soma_pesos)
+        inicio = t
+        fim = min(t + dur, duracao_max)
+        t = t + dur
+        if inicio >= duracao_max:
+            break
+        texto_escapado = texto.replace("'", "’").replace(":", "\\:").replace(",", "\\,")
+        linhas_filtro.append(
+            f"drawtext=fontfile={font_path}:text='{texto_escapado}':fontsize=64:fontcolor=white:"
+            f"borderw=10:bordercolor=black@0.8:shadowx=3:shadowy=3:shadowcolor=black@0.6:"
+            f"x=(w-text_w)/2:y=(h-text_h)/2:enable='between(t\\,{inicio:.2f}\\,{fim:.2f})'"
+        )
+    loop_offset += duracao_narracao
 
 with open("afirmacoes_filtro.txt", "w", encoding="utf-8") as f:
     f.write(",".join(linhas_filtro))
 PYEOF
-FONT_PATH="$FONT" DURACAO_NARRACAO="$DURACAO_NARRACAO" python3 montar_afirmacoes.py
-AFIRMACOES_FILTRO=$(cat afirmacoes_filtro.txt)
 
-echo "== Renderizando bloco de afirmacoes =="
-ffmpeg -y -loop 1 -i img_01.png -i narracao.mp3 -t "$DURACAO_NARRACAO" \
-  -vf "scale=1920:1080,fps=25,zoompan=z='min(zoom+0.0004,1.15)':d=$(echo "$DURACAO_NARRACAO * 25" | bc | cut -d. -f1):s=1920x1080:fps=25,${AFIRMACOES_FILTRO}" \
-  -c:v libx264 -preset veryfast -pix_fmt yuv420p -c:a aac -ar 44100 -shortest afirmacoes.mp4 -loglevel error
-echo "== Bloco de afirmacoes pronto =="
-ls -la afirmacoes.mp4
+if [ "$MODO_AFIRMACAO" = "true" ]; then
+  echo "== MODO AFIRMACAO: pulando bloco de introducao -- o video inteiro ja vai ser afirmacao =="
+else
+  echo "== Montando texto sincronizado das afirmacoes (bloco de introducao) =="
+  FONT_PATH="$FONT" DURACAO_NARRACAO="$DURACAO_NARRACAO" python3 montar_afirmacoes.py
+  AFIRMACOES_FILTRO=$(cat afirmacoes_filtro.txt)
 
-# ---------- 1. Transcrever CADA FAIXA ÚNICA com timestamps por palavra ----------
-# So transcreve as faixas base (antes do loop), que sao bem mais curtas que os
-# 90 minutos finais -- economiza muito tempo de execucao no runner.
-# Faixas instrumentais simplesmente nao geram palavras (fica sem legenda ali).
-echo "== Transcrevendo faixas com faster-whisper (timestamps por palavra) =="
-cat > transcrever.py << 'PYEOF'
+  echo "== Renderizando bloco de afirmacoes =="
+  ffmpeg -y -loop 1 -i img_01.png -i narracao.mp3 -t "$DURACAO_NARRACAO" \
+    -vf "scale=1920:1080,fps=25,zoompan=z='min(zoom+0.0004,1.15)':d=$(echo "$DURACAO_NARRACAO * 25" | bc | cut -d. -f1):s=1920x1080:fps=25,${AFIRMACOES_FILTRO}" \
+    -c:v libx264 -preset veryfast -pix_fmt yuv420p -c:a aac -ar 44100 -shortest afirmacoes.mp4 -loglevel error
+  echo "== Bloco de afirmacoes pronto =="
+  ls -la afirmacoes.mp4
+fi
+
+if [ "$MODO_AFIRMACAO" = "true" ]; then
+  # ---------- MODO AFIRMACAO: video inteiro = narracao em loop + texto sincronizado ----------
+  # Sem musica (Suno), sem transcricao Whisper, sem legenda karaoke -- o video
+  # inteiro (duracao alvo) e construido só com a narracao das afirmacoes.
+  echo "== Montando narracao em loop ate preencher a duracao alvo =="
+  REPETICOES_NARRACAO=$(echo "($DURACAO_ALVO_SEG / $DURACAO_NARRACAO) + 1" | bc)
+  > narracao_concat_list.txt
+  for i in $(seq 1 "$REPETICOES_NARRACAO"); do
+    echo "file '$(pwd)/narracao.mp3'" >> narracao_concat_list.txt
+  done
+  ffmpeg -y -f concat -safe 0 -i narracao_concat_list.txt -t "$DURACAO_ALVO_SEG" -c:a aac -ar 44100 audio_final.m4a -loglevel error
+
+  echo "== Montando texto sincronizado repetido pra cobrir a duracao alvo inteira =="
+  FONT_PATH="$FONT" DURACAO_NARRACAO="$DURACAO_NARRACAO" DURACAO_MAX="$DURACAO_ALVO_SEG" python3 montar_afirmacoes.py
+  AFIRMACOES_FILTRO_LONGO=$(cat afirmacoes_filtro.txt)
+
+  echo "== Gerando segmentos de imagem =="
+  DURACAO_POR_IMAGEM_ALVO=20
+  CICLO_DURACAO=$(echo "$NUM_IMAGENS * $DURACAO_POR_IMAGEM_ALVO" | bc -l)
+  CICLOS=$(echo "($DURACAO_ALVO_SEG / $CICLO_DURACAO) + 1" | bc)
+  NUM_SEGMENTOS=$(( NUM_IMAGENS * CICLOS ))
+  echo "Ciclos de imagens necessarios: $CICLOS (total de $NUM_SEGMENTOS trocas de cena)"
+
+  PERDA_TOTAL=$(echo "($NUM_SEGMENTOS - 1) * $XFADE_DUR" | bc -l)
+  DURACAO_COM_COMPENSACAO=$(echo "$DURACAO_ALVO_SEG + $PERDA_TOTAL" | bc -l)
+  DURACAO_POR_IMAGEM=$(echo "$DURACAO_COM_COMPENSACAO / $NUM_SEGMENTOS" | bc -l)
+  echo "Duração real por cena (com compensação de transição): ${DURACAO_POR_IMAGEM}s"
+
+  for ((i=1; i<=NUM_IMAGENS; i++)); do
+    IDX=$(printf "%02d" "$i")
+    IMG_FILE="img_${IDX}.png"
+    ffmpeg -y -loop 1 -i "$IMG_FILE" -t "$DURACAO_POR_IMAGEM" \
+      -vf "scale=1920:1080,zoompan=z='min(zoom+0.0008,1.3)':d=$(echo "$DURACAO_POR_IMAGEM * 25" | bc | cut -d. -f1):s=1920x1080:fps=25" \
+      -c:v libx264 -preset veryfast -pix_fmt yuv420p "seg_${IDX}.mp4" -loglevel error
+  done
+
+  BATCH_SIZE=10
+  NUM_BATCHES=$(( (NUM_SEGMENTOS + BATCH_SIZE - 1) / BATCH_SIZE ))
+  echo "== Montando segmentos em $NUM_BATCHES lotes de ate $BATCH_SIZE cenas (evita filtro gigante) =="
+
+  > concat_batches_list.txt
+  BATCH_IDX=0
+  for ((start=1; start<=NUM_SEGMENTOS; start+=BATCH_SIZE)); do
+    BATCH_IDX=$((BATCH_IDX + 1))
+    end=$((start + BATCH_SIZE - 1))
+    if [ "$end" -gt "$NUM_SEGMENTOS" ]; then
+      end=$NUM_SEGMENTOS
+    fi
+    BATCH_COUNT=$((end - start + 1))
+    BATCH_OUT=$(printf "batch_%03d.mp4" "$BATCH_IDX")
+
+    if [ "$BATCH_COUNT" -eq 1 ]; then
+      IMG_INDEX=$(( ((start - 1) % NUM_IMAGENS) + 1 ))
+      IDX=$(printf "%02d" "$IMG_INDEX")
+      cp "seg_${IDX}.mp4" "$BATCH_OUT"
+    else
+      BATCH_INPUTS=""
+      for ((n=start; n<=end; n++)); do
+        IMG_INDEX=$(( ((n - 1) % NUM_IMAGENS) + 1 ))
+        IDX=$(printf "%02d" "$IMG_INDEX")
+        BATCH_INPUTS="$BATCH_INPUTS -i seg_${IDX}.mp4"
+      done
+
+      BATCH_FILTER=""
+      OFFSET=$(echo "$DURACAO_POR_IMAGEM - $XFADE_DUR" | bc -l)
+      PREV="[0:v]"
+      for ((i=1; i<BATCH_COUNT; i++)); do
+        NEXT_LABEL="[v$i]"
+        if [ "$i" -eq $((BATCH_COUNT-1)) ]; then
+          NEXT_LABEL="[vbatch]"
+        fi
+        BATCH_FILTER="${BATCH_FILTER}${PREV}[${i}:v]xfade=transition=fade:duration=${XFADE_DUR}:offset=${OFFSET}${NEXT_LABEL}; "
+        PREV="[v$i]"
+        OFFSET=$(echo "$OFFSET + $DURACAO_POR_IMAGEM - $XFADE_DUR" | bc -l)
+      done
+      BATCH_FILTER=${BATCH_FILTER%; }
+      eval ffmpeg -y $BATCH_INPUTS -filter_complex \"$BATCH_FILTER\" -map \"[vbatch]\" -c:v libx264 -preset veryfast -pix_fmt yuv420p "$BATCH_OUT" -loglevel error
+    fi
+
+    echo "file '$(pwd)/$BATCH_OUT'" >> concat_batches_list.txt
+    echo "  Lote $BATCH_IDX/$NUM_BATCHES pronto ($BATCH_COUNT cenas)"
+  done
+
+  echo "== Concatenando lotes (corte seco entre lotes, sem reencode) =="
+  ffmpeg -y -f concat -safe 0 -i concat_batches_list.txt -c copy video_sem_audio.mp4 -loglevel error
+
+  echo "== Juntando video + narracao com afirmacoes sincronizadas (sem musica, sem legenda karaoke) =="
+  ffmpeg -y -i video_sem_audio.mp4 -i audio_final.m4a \
+    -vf "${AFIRMACOES_FILTRO_LONGO},drawtext=fontfile=${FONT}:text='Inscreva-se':fontsize=36:fontcolor=white@0.85:borderw=4:bordercolor=black@0.6:x=w-tw-40:y=40" \
+    -c:v libx264 -preset veryfast -pix_fmt yuv420p -c:a aac -shortest video_final.mp4 -loglevel error
+  echo "== Concluído (modo afirmacao) =="
+  ffprobe -v error -show_entries format=duration -of default=noprint_wrappers=1:nokey=1 video_final.mp4
+  ls -la video_final.mp4
+
+else
+  # ---------- 1. Transcrever CADA FAIXA ÚNICA com timestamps por palavra ----------
+  # So transcreve as faixas base (antes do loop), que sao bem mais curtas que os
+  # 90 minutos finais -- economiza muito tempo de execucao no runner.
+  # Faixas instrumentais simplesmente nao geram palavras (fica sem legenda ali).
+  echo "== Baixando áudios =="
+  echo "$AUDIO_URLS_JSON" | jq -r '.[]' | nl -w2 -nrz | while read -r idx url; do
+    baixar_com_retry "$url" "audio_${idx}.mp3"
+  done
+
+  echo "== Transcrevendo faixas com faster-whisper (timestamps por palavra) =="
+  cat > transcrever.py << 'PYEOF'
 import sys, json, glob, re
 from faster_whisper import WhisperModel
 
@@ -163,32 +276,32 @@ for audio_file in sorted(glob.glob("audio_*.mp3")):
 with open("transcricoes.json", "w", encoding="utf-8") as f:
     json.dump(resultado, f, ensure_ascii=False)
 PYEOF
-python3 transcrever.py
+  python3 transcrever.py
 
-# ---------- 2. Montar o áudio em loop até bater a duração alvo (igual ao original) ----------
-echo "== Montando áudio em loop =="
-ls audio_*.mp3 | sort > audio_list_base.txt
-NUM_FAIXAS=$(wc -l < audio_list_base.txt)
-DURACAO_FAIXAS=0
-> duracoes_faixas.txt
-while read -r f; do
-  D=$(ffprobe -v error -show_entries format=duration -of default=noprint_wrappers=1:nokey=1 "$f")
-  echo "$f $D" >> duracoes_faixas.txt
-  DURACAO_FAIXAS=$(echo "$DURACAO_FAIXAS + $D" | bc -l)
-done < audio_list_base.txt
-REPETICOES=$(echo "($DURACAO_ALVO_SEG / $DURACAO_FAIXAS) + 1" | bc)
-echo "Duração das faixas somadas: ${DURACAO_FAIXAS}s | Repetições necessárias: $REPETICOES"
-> audio_concat_list.txt
-for i in $(seq 1 "$REPETICOES"); do
+  # ---------- 2. Montar o áudio em loop até bater a duração alvo (igual ao original) ----------
+  echo "== Montando áudio em loop =="
+  ls audio_*.mp3 | sort > audio_list_base.txt
+  NUM_FAIXAS=$(wc -l < audio_list_base.txt)
+  DURACAO_FAIXAS=0
+  > duracoes_faixas.txt
   while read -r f; do
-    echo "file '$(pwd)/$f'" >> audio_concat_list.txt
+    D=$(ffprobe -v error -show_entries format=duration -of default=noprint_wrappers=1:nokey=1 "$f")
+    echo "$f $D" >> duracoes_faixas.txt
+    DURACAO_FAIXAS=$(echo "$DURACAO_FAIXAS + $D" | bc -l)
   done < audio_list_base.txt
-done
-ffmpeg -y -f concat -safe 0 -i audio_concat_list.txt -t "$DURACAO_ALVO_SEG" -c:a aac audio_final.m4a -loglevel error
+  REPETICOES=$(echo "($DURACAO_ALVO_SEG / $DURACAO_FAIXAS) + 1" | bc)
+  echo "Duração das faixas somadas: ${DURACAO_FAIXAS}s | Repetições necessárias: $REPETICOES"
+  > audio_concat_list.txt
+  for i in $(seq 1 "$REPETICOES"); do
+    while read -r f; do
+      echo "file '$(pwd)/$f'" >> audio_concat_list.txt
+    done < audio_list_base.txt
+  done
+  ffmpeg -y -f concat -safe 0 -i audio_concat_list.txt -t "$DURACAO_ALVO_SEG" -c:a aac audio_final.m4a -loglevel error
 
-# ---------- 2.5 Gerar legendas.ass (karaokê) repetindo/deslocando os timestamps a cada loop ----------
-echo "== Gerando arquivo de legenda karaokê (.ass) =="
-cat > gerar_ass.py << 'PYEOF'
+  # ---------- 2.5 Gerar legendas.ass (karaokê) repetindo/deslocando os timestamps a cada loop ----------
+  echo "== Gerando arquivo de legenda karaokê (.ass) =="
+  cat > gerar_ass.py << 'PYEOF'
 import json
 
 with open("transcricoes.json", encoding="utf-8") as f:
@@ -301,121 +414,120 @@ with open("legendas.ass", "w", encoding="utf-8") as f:
 
 print(f"{len(linhas_evento)} linhas de legenda geradas")
 PYEOF
-echo "$REPETICOES" > repeticoes.txt
-echo "$DURACAO_ALVO_SEG" > duracao_alvo.txt
-python3 gerar_ass.py
+  echo "$REPETICOES" > repeticoes.txt
+  echo "$DURACAO_ALVO_SEG" > duracao_alvo.txt
+  python3 gerar_ass.py
 
-# ---------- 3. Montar o vídeo (imagens em loop com zoom + crossfade) ----------
-# Em vez de mostrar as imagens do banco UMA vez cada (o que faz cada imagem ficar
-# minutos parada na tela num video longo), aqui repetimos o CICLO de imagens
-# varias vezes ate preencher a duracao alvo -- a tela troca de cena com
-# bem mais frequencia, sem precisar de nenhuma imagem nova (zero custo extra).
-# Cada imagem unica ainda e renderizada (com zoom) UMA SO VEZ; o arquivo
-# resultante e reaproveitado nas repeticoes seguintes do ciclo, entao o
-# tempo de render nao aumenta proporcionalmente ao numero de ciclos.
-echo "== Gerando segmentos de imagem =="
-DURACAO_POR_IMAGEM_ALVO=20  # segundos -- reduzido de 45s pra 20s (26/07) pra trocar de cena mais rapido
-CICLO_DURACAO=$(echo "$NUM_IMAGENS * $DURACAO_POR_IMAGEM_ALVO" | bc -l)
-CICLOS=$(echo "($DURACAO_ALVO_SEG / $CICLO_DURACAO) + 1" | bc)
-NUM_SEGMENTOS=$(( NUM_IMAGENS * CICLOS ))
-echo "Ciclos de imagens necessarios: $CICLOS (total de $NUM_SEGMENTOS trocas de cena)"
+  # ---------- 3. Montar o vídeo (imagens em loop com zoom + crossfade) ----------
+  # Em vez de mostrar as imagens do banco UMA vez cada (o que faz cada imagem ficar
+  # minutos parada na tela num video longo), aqui repetimos o CICLO de imagens
+  # varias vezes ate preencher a duracao alvo -- a tela troca de cena com
+  # bem mais frequencia, sem precisar de nenhuma imagem nova (zero custo extra).
+  # Cada imagem unica ainda e renderizada (com zoom) UMA SO VEZ; o arquivo
+  # resultante e reaproveitado nas repeticoes seguintes do ciclo, entao o
+  # tempo de render nao aumenta proporcionalmente ao numero de ciclos.
+  echo "== Gerando segmentos de imagem =="
+  DURACAO_POR_IMAGEM_ALVO=20  # segundos -- reduzido de 45s pra 20s (26/07) pra trocar de cena mais rapido
+  CICLO_DURACAO=$(echo "$NUM_IMAGENS * $DURACAO_POR_IMAGEM_ALVO" | bc -l)
+  CICLOS=$(echo "($DURACAO_ALVO_SEG / $CICLO_DURACAO) + 1" | bc)
+  NUM_SEGMENTOS=$(( NUM_IMAGENS * CICLOS ))
+  echo "Ciclos de imagens necessarios: $CICLOS (total de $NUM_SEGMENTOS trocas de cena)"
 
-PERDA_TOTAL=$(echo "($NUM_SEGMENTOS - 1) * $XFADE_DUR" | bc -l)
-DURACAO_COM_COMPENSACAO=$(echo "$DURACAO_ALVO_SEG + $PERDA_TOTAL" | bc -l)
-DURACAO_POR_IMAGEM=$(echo "$DURACAO_COM_COMPENSACAO / $NUM_SEGMENTOS" | bc -l)
-echo "Duração real por cena (com compensação de transição): ${DURACAO_POR_IMAGEM}s"
+  PERDA_TOTAL=$(echo "($NUM_SEGMENTOS - 1) * $XFADE_DUR" | bc -l)
+  DURACAO_COM_COMPENSACAO=$(echo "$DURACAO_ALVO_SEG + $PERDA_TOTAL" | bc -l)
+  DURACAO_POR_IMAGEM=$(echo "$DURACAO_COM_COMPENSACAO / $NUM_SEGMENTOS" | bc -l)
+  echo "Duração real por cena (com compensação de transição): ${DURACAO_POR_IMAGEM}s"
 
-# Renderiza cada imagem UNICA uma unica vez, com zoom, na duracao calculada.
-for ((i=1; i<=NUM_IMAGENS; i++)); do
-  IDX=$(printf "%02d" "$i")
-  IMG_FILE="img_${IDX}.png"
-  ffmpeg -y -loop 1 -i "$IMG_FILE" -t "$DURACAO_POR_IMAGEM" \
-    -vf "scale=1920:1080,zoompan=z='min(zoom+0.0008,1.3)':d=$(echo "$DURACAO_POR_IMAGEM * 25" | bc | cut -d. -f1):s=1920x1080:fps=25" \
-    -c:v libx264 -preset veryfast -pix_fmt yuv420p "seg_${IDX}.mp4" -loglevel error
-done
+  # Renderiza cada imagem UNICA uma unica vez, com zoom, na duracao calculada.
+  for ((i=1; i<=NUM_IMAGENS; i++)); do
+    IDX=$(printf "%02d" "$i")
+    IMG_FILE="img_${IDX}.png"
+    ffmpeg -y -loop 1 -i "$IMG_FILE" -t "$DURACAO_POR_IMAGEM" \
+      -vf "scale=1920:1080,zoompan=z='min(zoom+0.0008,1.3)':d=$(echo "$DURACAO_POR_IMAGEM * 25" | bc | cut -d. -f1):s=1920x1080:fps=25" \
+      -c:v libx264 -preset veryfast -pix_fmt yuv420p "seg_${IDX}.mp4" -loglevel error
+  done
 
-# Monta o video em LOTES pequenos em vez de um unico ffmpeg gigante com todos
-# os NUM_SEGMENTOS segmentos encadeados num so filter_complex.
-#
-# Causa raiz de ~50% das falhas/cancelamentos observados (18/08/2026): com uma
-# duracao alvo de 90min e trocas de cena a cada 20s, NUM_SEGMENTOS passa de
-# 250-300. Um unico ffmpeg com esse tanto de inputs + ~275 filtros xfade
-# encadeados no mesmo grafico estoura memoria/CPU do runner gratuito do
-# GitHub Actions (2 nucleos, 7GB RAM) -- o job fica 10+ minutos sem nenhum
-# log (ffmpeg com -loglevel error nao emite progresso) ate o runner ser
-# desligado a forca pela infra do GitHub ("received a shutdown signal").
-#
-# Fix: processa BATCH_SIZE segmentos por vez (grafico de filtro pequeno e
-# rapido), gera um mp4 por lote, depois concatena os lotes com o demuxer
-# concat (-c copy, sem reencode, praticamente instantaneo). O crossfade
-# continua acontecendo normalmente DENTRO de cada lote; so nas bordas entre
-# lotes (a cada ~BATCH_SIZE cenas) vira corte seco em vez de crossfade --
-# troca imperceptivel num video de fundo pra dormir, e resolve o estouro de
-# recursos.
-BATCH_SIZE=10
-NUM_BATCHES=$(( (NUM_SEGMENTOS + BATCH_SIZE - 1) / BATCH_SIZE ))
-echo "== Montando segmentos em $NUM_BATCHES lotes de ate $BATCH_SIZE cenas (evita filtro gigante) =="
+  # Monta o video em LOTES pequenos em vez de um unico ffmpeg gigante com todos
+  # os NUM_SEGMENTOS segmentos encadeados num so filter_complex.
+  #
+  # Causa raiz de ~50% das falhas/cancelamentos observados (18/08/2026): com uma
+  # duracao alvo de 90min e trocas de cena a cada 20s, NUM_SEGMENTOS passa de
+  # 250-300. Um unico ffmpeg com esse tanto de inputs + ~275 filtros xfade
+  # encadeados no mesmo grafico estoura memoria/CPU do runner gratuito do
+  # GitHub Actions (2 nucleos, 7GB RAM) -- o job fica 10+ minutos sem nenhum
+  # log (ffmpeg com -loglevel error nao emite progresso) ate o runner ser
+  # desligado a forca pela infra do GitHub ("received a shutdown signal").
+  #
+  # Fix: processa BATCH_SIZE segmentos por vez (grafico de filtro pequeno e
+  # rapido), gera um mp4 por lote, depois concatena os lotes com o demuxer
+  # concat (-c copy, sem reencode, praticamente instantaneo). O crossfade
+  # continua acontecendo normalmente DENTRO de cada lote; so nas bordas entre
+  # lotes (a cada ~BATCH_SIZE cenas) vira corte seco em vez de crossfade --
+  # troca imperceptivel num video de fundo pra dormir, e resolve o estouro de
+  # recursos.
+  BATCH_SIZE=10
+  NUM_BATCHES=$(( (NUM_SEGMENTOS + BATCH_SIZE - 1) / BATCH_SIZE ))
+  echo "== Montando segmentos em $NUM_BATCHES lotes de ate $BATCH_SIZE cenas (evita filtro gigante) =="
 
-> concat_batches_list.txt
-BATCH_IDX=0
-for ((start=1; start<=NUM_SEGMENTOS; start+=BATCH_SIZE)); do
-  BATCH_IDX=$((BATCH_IDX + 1))
-  end=$((start + BATCH_SIZE - 1))
-  if [ "$end" -gt "$NUM_SEGMENTOS" ]; then
-    end=$NUM_SEGMENTOS
-  fi
-  BATCH_COUNT=$((end - start + 1))
-  BATCH_OUT=$(printf "batch_%03d.mp4" "$BATCH_IDX")
+  > concat_batches_list.txt
+  BATCH_IDX=0
+  for ((start=1; start<=NUM_SEGMENTOS; start+=BATCH_SIZE)); do
+    BATCH_IDX=$((BATCH_IDX + 1))
+    end=$((start + BATCH_SIZE - 1))
+    if [ "$end" -gt "$NUM_SEGMENTOS" ]; then
+      end=$NUM_SEGMENTOS
+    fi
+    BATCH_COUNT=$((end - start + 1))
+    BATCH_OUT=$(printf "batch_%03d.mp4" "$BATCH_IDX")
 
-  if [ "$BATCH_COUNT" -eq 1 ]; then
-    # Lote com uma unica cena -- nao ha o que cruzar, so reaproveita o segmento.
-    IMG_INDEX=$(( ((start - 1) % NUM_IMAGENS) + 1 ))
-    IDX=$(printf "%02d" "$IMG_INDEX")
-    cp "seg_${IDX}.mp4" "$BATCH_OUT"
-  else
-    BATCH_INPUTS=""
-    for ((n=start; n<=end; n++)); do
-      IMG_INDEX=$(( ((n - 1) % NUM_IMAGENS) + 1 ))
+    if [ "$BATCH_COUNT" -eq 1 ]; then
+      # Lote com uma unica cena -- nao ha o que cruzar, so reaproveita o segmento.
+      IMG_INDEX=$(( ((start - 1) % NUM_IMAGENS) + 1 ))
       IDX=$(printf "%02d" "$IMG_INDEX")
-      BATCH_INPUTS="$BATCH_INPUTS -i seg_${IDX}.mp4"
-    done
+      cp "seg_${IDX}.mp4" "$BATCH_OUT"
+    else
+      BATCH_INPUTS=""
+      for ((n=start; n<=end; n++)); do
+        IMG_INDEX=$(( ((n - 1) % NUM_IMAGENS) + 1 ))
+        IDX=$(printf "%02d" "$IMG_INDEX")
+        BATCH_INPUTS="$BATCH_INPUTS -i seg_${IDX}.mp4"
+      done
 
-    BATCH_FILTER=""
-    OFFSET=$(echo "$DURACAO_POR_IMAGEM - $XFADE_DUR" | bc -l)
-    PREV="[0:v]"
-    for ((i=1; i<BATCH_COUNT; i++)); do
-      NEXT_LABEL="[v$i]"
-      if [ "$i" -eq $((BATCH_COUNT-1)) ]; then
-        NEXT_LABEL="[vbatch]"
-      fi
-      BATCH_FILTER="${BATCH_FILTER}${PREV}[${i}:v]xfade=transition=fade:duration=${XFADE_DUR}:offset=${OFFSET}${NEXT_LABEL}; "
-      PREV="[v$i]"
-      OFFSET=$(echo "$OFFSET + $DURACAO_POR_IMAGEM - $XFADE_DUR" | bc -l)
-    done
-    BATCH_FILTER=${BATCH_FILTER%; }
-    eval ffmpeg -y $BATCH_INPUTS -filter_complex \"$BATCH_FILTER\" -map \"[vbatch]\" -c:v libx264 -preset veryfast -pix_fmt yuv420p "$BATCH_OUT" -loglevel error
-  fi
+      BATCH_FILTER=""
+      OFFSET=$(echo "$DURACAO_POR_IMAGEM - $XFADE_DUR" | bc -l)
+      PREV="[0:v]"
+      for ((i=1; i<BATCH_COUNT; i++)); do
+        NEXT_LABEL="[v$i]"
+        if [ "$i" -eq $((BATCH_COUNT-1)) ]; then
+          NEXT_LABEL="[vbatch]"
+        fi
+        BATCH_FILTER="${BATCH_FILTER}${PREV}[${i}:v]xfade=transition=fade:duration=${XFADE_DUR}:offset=${OFFSET}${NEXT_LABEL}; "
+        PREV="[v$i]"
+        OFFSET=$(echo "$OFFSET + $DURACAO_POR_IMAGEM - $XFADE_DUR" | bc -l)
+      done
+      BATCH_FILTER=${BATCH_FILTER%; }
+      eval ffmpeg -y $BATCH_INPUTS -filter_complex \"$BATCH_FILTER\" -map \"[vbatch]\" -c:v libx264 -preset veryfast -pix_fmt yuv420p "$BATCH_OUT" -loglevel error
+    fi
 
-  echo "file '$(pwd)/$BATCH_OUT'" >> concat_batches_list.txt
-  echo "  Lote $BATCH_IDX/$NUM_BATCHES pronto ($BATCH_COUNT cenas)"
-done
+    echo "file '$(pwd)/$BATCH_OUT'" >> concat_batches_list.txt
+    echo "  Lote $BATCH_IDX/$NUM_BATCHES pronto ($BATCH_COUNT cenas)"
+  done
 
-echo "== Concatenando lotes (corte seco entre lotes, sem reencode) =="
-ffmpeg -y -f concat -safe 0 -i concat_batches_list.txt -c copy video_sem_audio.mp4 -loglevel error
+  echo "== Concatenando lotes (corte seco entre lotes, sem reencode) =="
+  ffmpeg -y -f concat -safe 0 -i concat_batches_list.txt -c copy video_sem_audio.mp4 -loglevel error
 
-# ---------- 4. Juntar áudio + vídeo + QUEIMAR LEGENDA (reencode, nao da mais pra usar -c:v copy) ----------
-echo "== Juntando áudio, vídeo e legenda karaokê =="
-ffmpeg -y -i video_sem_audio.mp4 -i audio_final.m4a -vf "ass=legendas.ass:fontsdir=$(realpath ~/.fonts 2>/dev/null || echo /usr/share/fonts),drawtext=fontfile=${FONT}:text='Inscreva-se':fontsize=36:fontcolor=white@0.85:borderw=4:bordercolor=black@0.6:x=w-tw-40:y=40" \
-  -c:v libx264 -preset veryfast -pix_fmt yuv420p -c:a aac -shortest video_final.mp4 -loglevel error
-echo "== Concluído =="
-ffprobe -v error -show_entries format=duration -of default=noprint_wrappers=1:nokey=1 video_final.mp4
-ls -la video_final.mp4
+  # ---------- 4. Juntar áudio + vídeo + QUEIMAR LEGENDA (reencode, nao da mais pra usar -c:v copy) ----------
+  echo "== Juntando áudio, vídeo e legenda karaokê =="
+  ffmpeg -y -i video_sem_audio.mp4 -i audio_final.m4a -vf "ass=legendas.ass:fontsdir=$(realpath ~/.fonts 2>/dev/null || echo /usr/share/fonts),drawtext=fontfile=${FONT}:text='Inscreva-se':fontsize=36:fontcolor=white@0.85:borderw=4:bordercolor=black@0.6:x=w-tw-40:y=40" \
+    -c:v libx264 -preset veryfast -pix_fmt yuv420p -c:a aac -shortest video_final.mp4 -loglevel error
+  echo "== Concluído =="
+  ffprobe -v error -show_entries format=duration -of default=noprint_wrappers=1:nokey=1 video_final.mp4
+  ls -la video_final.mp4
+fi
 
 # ---------- 5. Gerar Shorts (2 cortes verticais 9:16) ----------
-# NOTA: nesta primeira versao os Shorts NAO recebem legenda (video_final.mp4 aqui
-# ja tem a legenda queimada, entao os cortes vao sair COM legenda tambem --
-# isso e intencional para a v1; se nao quiser legenda nos Shorts, avisar que
-# precisamos cortar de um video_final_sem_legenda.mp4 separado).
+# NOTA: os Shorts sao cortados do video_final.mp4 (com legenda/watermark ja
+# queimados, ou com o texto de afirmacao ja queimado no modo afirmacao).
 echo "== Gerando Shorts =="
 SHORT_DUR=50
 INICIO_SHORT_1=0
@@ -485,7 +597,7 @@ python3 make_thumbnail.py thumb_template.png "$DURACAO_TEXTO" "$FONT" thumbnail.
 echo "== Thumbnail gerada =="
 ls -la thumbnail.jpg
 
-# ---------- 7. Gerar vinheta de CTA e anexar ao final ----------
+# ---------- 7. Gerar vinheta de CTA e anexar (inicio+fim no modo normal; so fim no modo afirmacao) ----------
 echo "== Gerando vinheta de inscrição (CTA) =="
 CTA_DUR=5
 CTA_IMG="img_01.png"
@@ -495,13 +607,22 @@ drawtext=fontfile=${FONT}:text='Inscreva-se no canal!':fontsize=92:fontcolor=whi
 drawtext=fontfile=${FONT}:text='e ajude essa bencao a chegar em mais familias':fontsize=48:fontcolor=white:borderw=9:bordercolor=black@0.85:shadowx=3:shadowy=3:shadowcolor=black@0.6:x=(w-text_w)/2:y=(h-text_h)/2+70,\
 fade=t=in:st=0:d=0.5,fade=t=out:st=$(echo "$CTA_DUR - 0.5" | bc):d=0.5" \
   -c:v libx264 -preset veryfast -pix_fmt yuv420p -c:a aac -shortest vinheta.mp4 -loglevel error
-echo "== Anexando afirmacoes + vinheta no inicio e vinheta no final do vídeo principal =="
-echo "file '$(pwd)/afirmacoes.mp4'" > concat_cta_list.txt
-echo "file '$(pwd)/vinheta.mp4'" >> concat_cta_list.txt
-echo "file '$(pwd)/video_final.mp4'" >> concat_cta_list.txt
-echo "file '$(pwd)/vinheta.mp4'" >> concat_cta_list.txt
+
+if [ "$MODO_AFIRMACAO" = "true" ]; then
+  # O video inteiro ja e afirmacao do inicio ao fim -- so precisa da vinheta de
+  # inscricao no final (o bloco de introducao normal nao existe nesse modo).
+  echo "== Anexando vinheta no final do vídeo (modo afirmacao) =="
+  echo "file '$(pwd)/video_final.mp4'" > concat_cta_list.txt
+  echo "file '$(pwd)/vinheta.mp4'" >> concat_cta_list.txt
+else
+  echo "== Anexando afirmacoes + vinheta no inicio e vinheta no final do vídeo principal =="
+  echo "file '$(pwd)/afirmacoes.mp4'" > concat_cta_list.txt
+  echo "file '$(pwd)/vinheta.mp4'" >> concat_cta_list.txt
+  echo "file '$(pwd)/video_final.mp4'" >> concat_cta_list.txt
+  echo "file '$(pwd)/vinheta.mp4'" >> concat_cta_list.txt
+fi
 ffmpeg -y -f concat -safe 0 -i concat_cta_list.txt -c copy video_final_com_cta.mp4 -loglevel error
 mv video_final_com_cta.mp4 video_final.mp4
-echo "== Vídeo final com CTA (inicio+fim) e legenda pronto =="
+echo "== Vídeo final com CTA pronto =="
 ffprobe -v error -show_entries format=duration -of default=noprint_wrappers=1:nokey=1 video_final.mp4
 ls -la video_final.mp4 thumbnail.jpg short_1.mp4 short_2.mp4
