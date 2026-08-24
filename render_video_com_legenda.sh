@@ -51,10 +51,26 @@ curl -sL -o thumb_template.png "$THUMB_TEMPLATE_URL"
 baixar_com_retry() {
   local url="$1"
   local destino="$2"
+  local tipo="${3:-}"  # opcional: "png" valida a assinatura do arquivo, nao so o tamanho
   local tentativas=3
   local tentativa=1
   while [ "$tentativa" -le "$tentativas" ]; do
     if curl -sL --fail --max-time 30 -o "$destino" "$url" && [ -s "$destino" ]; then
+      if [ "$tipo" = "png" ]; then
+        # 20/08/2026: "arquivo nao vazio" nao bastou -- imagem-25.png ficou
+        # com so 2 bytes no repo (upload quebrado), o curl "teve sucesso"
+        # (200 OK, --fail nao pega isso) e o ffmpeg entrou num loop de erro
+        # decodificando lixo por quase 2h ate a execucao inteira falhar.
+        # PNG valido sempre comeca com os bytes 89 50 4E 47 0D 0A 1A 0A.
+        local assinatura
+        assinatura=$(od -An -tx1 -N8 "$destino" 2>/dev/null | tr -d ' \n')
+        if [ "$assinatura" != "89504e470d0a1a0a" ]; then
+          echo "  Aviso: arquivo baixado nao e um PNG valido (tentativa $tentativa/$tentativas): $url"
+          tentativa=$((tentativa + 1))
+          sleep 2
+          continue
+        fi
+      fi
       return 0
     fi
     echo "  Aviso: falha ao baixar (tentativa $tentativa/$tentativas): $url"
@@ -67,7 +83,7 @@ baixar_com_retry() {
 
 echo "== Baixando imagens =="
 echo "$IMAGE_URLS_JSON" | jq -r '.[]' | nl -w2 -nrz | while read -r idx url; do
-  baixar_com_retry "$url" "img_${idx}.png"
+  baixar_com_retry "$url" "img_${idx}.png" png
 done
 NUM_IMAGENS=$(echo "$IMAGE_URLS_JSON" | jq 'length')
 echo "Total de imagens: $NUM_IMAGENS"
@@ -114,7 +130,7 @@ while loop_offset < duracao_max:
         t = t + dur
         if inicio >= duracao_max:
             break
-        texto_escapado = texto.replace("'", "'").replace(":", "\\:").replace(",", "\\,")
+        texto_escapado = texto.replace("'", "’").replace(":", "\\:").replace(",", "\\,")
         linhas_filtro.append(
             f"drawtext=fontfile={font_path}:text='{texto_escapado}':fontsize=64:fontcolor=white:"
             f"borderw=10:bordercolor=black@0.8:shadowx=3:shadowy=3:shadowcolor=black@0.6:"
@@ -249,19 +265,12 @@ else
 
   echo "== Transcrevendo faixas com faster-whisper (timestamps por palavra) =="
   cat > transcrever.py << 'PYEOF'
-import sys, json, glob, re, os
+import sys, json, glob, re
 from faster_whisper import WhisperModel
 
-# 24/08/2026: as musicas pedem vocal "quase sussurrado" (canto bem baixinho,
-# de proposito, pra ficar suave pro bebe) -- isso fazia o modelo "small" e o
-# VAD padrao classificarem a maior parte do canto como "sem fala" e descartar
-# quase toda a legenda. Tentativa inicial (modelo "medium" + VAD threshold=0.2)
-# travou o render por 40+ minutos: threshold tao baixo deixou passar o audio
-# quase inteiro pro Whisper (em vez de so os trechos com voz), multiplicando
-# o trabalho justamente no modelo mais lento. Revertido pro modelo "small"
-# (rapido, ja provado) e o threshold do VAD ajustado de forma bem mais
-# moderada (0.5 -> 0.35) so pra pegar um pouco mais de canto baixinho, sem
-# deixar passar o audio inteiro.
+# Modelo "small" em vez de "base": lida bem melhor com voz cantada/melodia
+# (o "base" tende a "desistir" de transcrever trechos cantados e inserir
+# marcadores tipo [musica]/[canto] no lugar da palavra real).
 model = WhisperModel("small", device="cpu", compute_type="int8")
 
 # Padrao pra descartar marcadores de som nao-verbal que o Whisper as vezes
@@ -274,10 +283,6 @@ for audio_file in sorted(glob.glob("audio_*.mp3")):
     segments, info = model.transcribe(
         audio_file, word_timestamps=True, language="pt",
         vad_filter=True,  # ignora trechos sem fala, reduz alucinacao em trechos instrumentais
-        # threshold padrao (0.5) tratava canto baixinho/sussurrado como "sem fala"
-        # e cortava o audio antes mesmo do Whisper tentar transcrever. 0.2 travou
-        # o render (deixava passar audio demais); 0.35 e um meio-termo mais seguro.
-        vad_parameters=dict(threshold=0.35),
         # Contexto ajuda o modelo a "esperar" letra de musica cantada em vez de fala falada,
         # reduzindo tanto descarte indevido de trechos cantados quanto alucinacao de palavras.
         initial_prompt="Letra de musica crista infantil em portugues, cantada suavemente, estilo canção de ninar."
