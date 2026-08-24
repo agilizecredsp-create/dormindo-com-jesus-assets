@@ -72,11 +72,21 @@ done
 NUM_IMAGENS=$(echo "$IMAGE_URLS_JSON" | jq 'length')
 echo "Total de imagens: $NUM_IMAGENS"
 
-echo "== Baixando narracao das afirmacoes =="
-baixar_com_retry "$NARRACAO_URL" narracao.mp3
-DURACAO_NARRACAO=$(ffprobe -v error -show_entries format=duration -of default=noprint_wrappers=1:nokey=1 narracao.mp3)
-echo "Duracao da narracao: ${DURACAO_NARRACAO}s"
-echo "$AFIRMACOES_JSON" > afirmacoes.json
+# 24/08/2026: NARRACAO_URL/AFIRMACOES_JSON sao opcionais por design (ver
+# comentario do cabecalho), mas o download da narracao estava incondicional --
+# quebrava TODO render (inclusive o pipeline de musica normal do Longo, que
+# nunca manda essas variaveis) com "nao foi possivel baixar apos 3 tentativas: "
+# (URL vazia) direto na primeira etapa, sem nenhum video sair no final.
+# Agora so baixa/ativa o bloco de afirmacoes quando NARRACAO_URL vier preenchida.
+if [ -n "$NARRACAO_URL" ]; then
+  echo "== Baixando narracao das afirmacoes =="
+  baixar_com_retry "$NARRACAO_URL" narracao.mp3
+  DURACAO_NARRACAO=$(ffprobe -v error -show_entries format=duration -of default=noprint_wrappers=1:nokey=1 narracao.mp3)
+  echo "Duracao da narracao: ${DURACAO_NARRACAO}s"
+  echo "$AFIRMACOES_JSON" > afirmacoes.json
+else
+  echo "== NARRACAO_URL nao informada -- pulando bloco de afirmacoes (video normal, sem introducao de afirmacoes) =="
+fi
 
 # ---------- Gerador de texto sincronizado (peso proporcional ao tamanho de cada frase) ----------
 # Reaproveitado tanto pro bloco de introducao (uma volta so) quanto pro modo
@@ -104,7 +114,7 @@ while loop_offset < duracao_max:
         t = t + dur
         if inicio >= duracao_max:
             break
-        texto_escapado = texto.replace("'", "’").replace(":", "\\:").replace(",", "\\,")
+        texto_escapado = texto.replace("'", "'").replace(":", "\\:").replace(",", "\\,")
         linhas_filtro.append(
             f"drawtext=fontfile={font_path}:text='{texto_escapado}':fontsize=64:fontcolor=white:"
             f"borderw=10:bordercolor=black@0.8:shadowx=3:shadowy=3:shadowcolor=black@0.6:"
@@ -118,7 +128,7 @@ PYEOF
 
 if [ "$MODO_AFIRMACAO" = "true" ]; then
   echo "== MODO AFIRMACAO: pulando bloco de introducao -- o video inteiro ja vai ser afirmacao =="
-else
+elif [ -n "$NARRACAO_URL" ]; then
   echo "== Montando texto sincronizado das afirmacoes (bloco de introducao) =="
   FONT_PATH="$FONT" DURACAO_NARRACAO="$DURACAO_NARRACAO" python3 montar_afirmacoes.py
   AFIRMACOES_FILTRO=$(cat afirmacoes_filtro.txt)
@@ -129,6 +139,8 @@ else
     -c:v libx264 -preset veryfast -pix_fmt yuv420p -c:a aac -ar 44100 -shortest afirmacoes.mp4 -loglevel error
   echo "== Bloco de afirmacoes pronto =="
   ls -la afirmacoes.mp4
+else
+  echo "== Sem NARRACAO_URL -- sem bloco de introducao de afirmacoes (video normal antigo) =="
 fi
 
 if [ "$MODO_AFIRMACAO" = "true" ]; then
@@ -614,10 +626,15 @@ if [ "$MODO_AFIRMACAO" = "true" ]; then
   echo "== Anexando vinheta no final do vídeo (modo afirmacao) =="
   echo "file '$(pwd)/video_final.mp4'" > concat_cta_list.txt
   echo "file '$(pwd)/vinheta.mp4'" >> concat_cta_list.txt
-else
+elif [ -f afirmacoes.mp4 ]; then
   echo "== Anexando afirmacoes + vinheta no inicio e vinheta no final do vídeo principal =="
   echo "file '$(pwd)/afirmacoes.mp4'" > concat_cta_list.txt
   echo "file '$(pwd)/vinheta.mp4'" >> concat_cta_list.txt
+  echo "file '$(pwd)/video_final.mp4'" >> concat_cta_list.txt
+  echo "file '$(pwd)/vinheta.mp4'" >> concat_cta_list.txt
+else
+  echo "== Sem bloco de afirmacoes -- anexando só a vinheta no inicio e no final (video normal antigo) =="
+  echo "file '$(pwd)/vinheta.mp4'" > concat_cta_list.txt
   echo "file '$(pwd)/video_final.mp4'" >> concat_cta_list.txt
   echo "file '$(pwd)/vinheta.mp4'" >> concat_cta_list.txt
 fi
