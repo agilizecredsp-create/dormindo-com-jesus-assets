@@ -271,6 +271,10 @@ from faster_whisper import WhisperModel
 # Modelo "small" em vez de "base": lida bem melhor com voz cantada/melodia
 # (o "base" tende a "desistir" de transcrever trechos cantados e inserir
 # marcadores tipo [musica]/[canto] no lugar da palavra real).
+# 24/08/2026: tentamos "medium" + VAD threshold=0.2 pra pegar o canto quase
+# sussurrado que as musicas pedem -- travou o render por 40+ minutos (deixava
+# passar audio demais pro modelo mais lento). Ficou "small" (rapido) com o
+# threshold do VAD so moderadamente mais sensivel (0.35), sem exagerar.
 model = WhisperModel("small", device="cpu", compute_type="int8")
 
 # Padrao pra descartar marcadores de som nao-verbal que o Whisper as vezes
@@ -283,6 +287,10 @@ for audio_file in sorted(glob.glob("audio_*.mp3")):
     segments, info = model.transcribe(
         audio_file, word_timestamps=True, language="pt",
         vad_filter=True,  # ignora trechos sem fala, reduz alucinacao em trechos instrumentais
+        # threshold padrao (0.5) tratava canto baixinho/sussurrado como "sem fala"
+        # e cortava o audio antes mesmo do Whisper tentar transcrever. 0.2 travou
+        # o render (deixava passar audio demais); 0.35 e um meio-termo mais seguro.
+        vad_parameters=dict(threshold=0.35),
         # Contexto ajuda o modelo a "esperar" letra de musica cantada em vez de fala falada,
         # reduzindo tanto descarte indevido de trechos cantados quanto alucinacao de palavras.
         initial_prompt="Letra de musica crista infantil em portugues, cantada suavemente, estilo canção de ninar."
@@ -325,7 +333,12 @@ PYEOF
       echo "file '$(pwd)/$f'" >> audio_concat_list.txt
     done < audio_list_base.txt
   done
-  ffmpeg -y -f concat -safe 0 -i audio_concat_list.txt -t "$DURACAO_ALVO_SEG" -c:a aac audio_final.m4a -loglevel error
+  # 24/08/2026: sem -ar aqui, a taxa de amostragem herdava a da faixa Suno
+  # original (nem sempre 44100). Isso desalinhava com afirmacoes.mp4/vinheta.mp4
+  # (ambos fixos em 44100) no concat final com "-c copy" (sem reencode), causando
+  # audio de um trecho "vazar"/sobrepor no outro (ex: narracao tocando junto com
+  # a musica). Forcado 44100 aqui pra bater com o resto do pipeline.
+  ffmpeg -y -f concat -safe 0 -i audio_concat_list.txt -t "$DURACAO_ALVO_SEG" -c:a aac -ar 44100 audio_final.m4a -loglevel error
 
   # ---------- 2.5 Gerar legendas.ass (karaokê) repetindo/deslocando os timestamps a cada loop ----------
   echo "== Gerando arquivo de legenda karaokê (.ass) =="
@@ -334,6 +347,17 @@ import json
 
 with open("transcricoes.json", encoding="utf-8") as f:
     transcricoes = json.load(f)
+
+# 24/08/2026: legenda sempre aparecia depois da frase ja ter sido cantada --
+# o Whisper tende a "commitar" o timestamp de uma palavra cantada/sustentada
+# um pouco depois do inicio real do som (limitacao conhecida em canto, pior
+# ainda com melodia suave/sussurrada). Antecipa cada timestamp em 0.35s (sem
+# deixar ficar negativo) pra compensar esse atraso sistematico.
+COMPENSACAO_ATRASO = 0.35
+for palavras in transcricoes.values():
+    for p in palavras:
+        p["start"] = max(0.0, p["start"] - COMPENSACAO_ATRASO)
+        p["end"] = max(p["start"] + 0.05, p["end"] - COMPENSACAO_ATRASO)
 
 # ordem e duracao de cada faixa, na mesma ordem usada no loop de audio
 faixas = []
