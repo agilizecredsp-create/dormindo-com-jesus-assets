@@ -255,14 +255,14 @@ from faster_whisper import WhisperModel
 # 24/08/2026: as musicas pedem vocal "quase sussurrado" (canto bem baixinho,
 # de proposito, pra ficar suave pro bebe) -- isso fazia o modelo "small" e o
 # VAD padrao classificarem a maior parte do canto como "sem fala" e descartar
-# quase toda a legenda. Modelo "medium" (mais preciso com voz baixa/melodica)
-# soh pro Curto, onde o audio e curto (~5min) e da tempo de sobra; no Longo
-# (90min) mantem "small" pra nao piorar o problema de timeout de render que
-# ja existe la.
-DURACAO_ALVO = float(os.environ.get("DURACAO_ALVO_SEG", "0") or 0)
-MODEL_SIZE = "medium" if DURACAO_ALVO > 0 and DURACAO_ALVO < 1000 else "small"
-print(f"Usando modelo Whisper: {MODEL_SIZE} (duracao alvo: {DURACAO_ALVO}s)")
-model = WhisperModel(MODEL_SIZE, device="cpu", compute_type="int8")
+# quase toda a legenda. Tentativa inicial (modelo "medium" + VAD threshold=0.2)
+# travou o render por 40+ minutos: threshold tao baixo deixou passar o audio
+# quase inteiro pro Whisper (em vez de so os trechos com voz), multiplicando
+# o trabalho justamente no modelo mais lento. Revertido pro modelo "small"
+# (rapido, ja provado) e o threshold do VAD ajustado de forma bem mais
+# moderada (0.5 -> 0.35) so pra pegar um pouco mais de canto baixinho, sem
+# deixar passar o audio inteiro.
+model = WhisperModel("small", device="cpu", compute_type="int8")
 
 # Padrao pra descartar marcadores de som nao-verbal que o Whisper as vezes
 # insere no lugar de uma palavra real (ex: [musica], [canto], [aplausos]).
@@ -275,9 +275,9 @@ for audio_file in sorted(glob.glob("audio_*.mp3")):
         audio_file, word_timestamps=True, language="pt",
         vad_filter=True,  # ignora trechos sem fala, reduz alucinacao em trechos instrumentais
         # threshold padrao (0.5) tratava canto baixinho/sussurrado como "sem fala"
-        # e cortava o audio antes mesmo do Whisper tentar transcrever. Baixado pra
-        # 0.2 pra deixar passar vocal bem mais baixo sem soltar tanto ruido puro.
-        vad_parameters=dict(threshold=0.2),
+        # e cortava o audio antes mesmo do Whisper tentar transcrever. 0.2 travou
+        # o render (deixava passar audio demais); 0.35 e um meio-termo mais seguro.
+        vad_parameters=dict(threshold=0.35),
         # Contexto ajuda o modelo a "esperar" letra de musica cantada em vez de fala falada,
         # reduzindo tanto descarte indevido de trechos cantados quanto alucinacao de palavras.
         initial_prompt="Letra de musica crista infantil em portugues, cantada suavemente, estilo canção de ninar."
