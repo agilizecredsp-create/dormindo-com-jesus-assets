@@ -34,6 +34,9 @@ jobs:
           AUDIO_URLS_JSON: ${{ toJson(github.event.client_payload.audioUrls) }}
           IMAGE_URLS_JSON: ${{ toJson(github.event.client_payload.imageUrls) }}
           DURACAO_ALVO_SEG: ${{ github.event.client_payload.duracaoAlvoSegundos }}
+          AFIRMACOES_JSON: ${{ toJson(github.event.client_payload.afirmacoes) }}
+          NARRACAO_URL: ${{ github.event.client_payload.narracaoUrl }}
+          MODO_AFIRMACAO: ${{ github.event.client_payload.modoAfirmacao }}
         run: |
           chmod +x render_video_com_legenda.sh
           ./render_video_com_legenda.sh
