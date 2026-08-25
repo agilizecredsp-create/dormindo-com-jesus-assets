@@ -96,6 +96,24 @@ baixar_com_retry() {
     tentativa=$((tentativa + 1))
     sleep 4
   done
+  # 25/08/2026: mesmo com as 6 tentativas acima, o CDN publico
+  # raw.githubusercontent.com as vezes ainda nao propagou um arquivo
+  # recem-commitado (confirmado real: imagem-20.png falhou 6/6 vezes so
+  # nesse CDN num disparo de teste). Fallback: se a URL for desse dominio,
+  # tenta direto pela API do GitHub (api.github.com/.../contents/), que
+  # reflete o commit mais recente na hora, sem esse lag -- mesma tecnica
+  # ja usada nesta automacao pra confirmar pushes.
+  if [[ "$url" == https://raw.githubusercontent.com/* ]] && [ -n "${GH_TOKEN:-}" ]; then
+    echo "  Tentando via api.github.com (sem lag de CDN)..."
+    local api_url
+    api_url=$(echo "$url" | sed -E 's#https://raw.githubusercontent.com/([^/]+)/([^/]+)/([^/]+)/(.*)#https://api.github.com/repos/\1/\2/contents/\4?ref=\3#')
+    if curl -sL --fail --max-time 30 -H "Authorization: token $GH_TOKEN" -H "Accept: application/vnd.github.raw" -o "$destino" "$api_url" && [ -s "$destino" ]; then
+      if [ "$tipo" != "png" ] || [ "$(od -An -tx1 -N8 "$destino" 2>/dev/null | tr -d ' \n')" = "89504e470d0a1a0a" ]; then
+        echo "  OK via api.github.com"
+        return 0
+      fi
+    fi
+  fi
   echo "ERRO FATAL: nao foi possivel baixar apos $tentativas tentativas: $url"
   exit 1
 }
