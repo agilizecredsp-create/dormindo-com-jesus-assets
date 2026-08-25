@@ -52,7 +52,14 @@ baixar_com_retry() {
   local url="$1"
   local destino="$2"
   local tipo="${3:-}"  # opcional: "png" valida a assinatura do arquivo, nao so o tamanho
-  local tentativas=3
+  # 25/08/2026: os 2 disparos automaticos (agendados) de hoje falharam rapido
+  # (~20-40s) logo no inicio do script, enquanto todo teste manual funcionou.
+  # Suspeita forte: a narracao.mp3 acabou de ser commitada no GitHub segundos
+  # antes (via API) e o CDN publico raw.githubusercontent.com as vezes demora
+  # alguns segundos pra propagar um arquivo recem-criado -- com so 3
+  # tentativas de 2s, o download desistia rapido demais. Aumentado pra 6
+  # tentativas de 4s (ate 24s de espera) pra dar tempo do CDN se atualizar.
+  local tentativas=6
   local tentativa=1
   while [ "$tentativa" -le "$tentativas" ]; do
     if curl -sL --fail --max-time 30 -o "$destino" "$url" && [ -s "$destino" ]; then
@@ -67,7 +74,7 @@ baixar_com_retry() {
         if [ "$assinatura" != "89504e470d0a1a0a" ]; then
           echo "  Aviso: arquivo baixado nao e um PNG valido (tentativa $tentativa/$tentativas): $url"
           tentativa=$((tentativa + 1))
-          sleep 2
+          sleep 4
           continue
         fi
       fi
@@ -75,7 +82,7 @@ baixar_com_retry() {
     fi
     echo "  Aviso: falha ao baixar (tentativa $tentativa/$tentativas): $url"
     tentativa=$((tentativa + 1))
-    sleep 2
+    sleep 4
   done
   echo "ERRO FATAL: nao foi possivel baixar apos $tentativas tentativas: $url"
   exit 1
