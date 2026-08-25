@@ -19,6 +19,18 @@ rm -rf "$WORKDIR" && mkdir -p "$WORKDIR"
 cd "$WORKDIR"
 XFADE_DUR=0.5
 
+# 25/08/2026: DEBUG TEMPORARIO -- captura toda a saida do script e manda pra
+# um webhook de coleta assim que o script terminar (sucesso ou falha), pra
+# investigar as falhas rapidas (~20-48s) que so acontecem em alguns disparos.
+# Remover depois de diagnosticado -- nao usar em producao definitiva.
+exec > >(tee /tmp/render_debug.log) 2>&1
+enviar_debug_log() {
+  local status_saida=$?
+  echo "=== FIM DO SCRIPT (exit code: $status_saida) ==="
+  curl -s -X POST --data-binary @/tmp/render_debug.log "https://cheaptarantula-n8n.cloudfy.live/webhook/debug-catch-temp" -H "Content-Type: text/plain" --max-time 15 || true
+}
+trap enviar_debug_log EXIT
+
 # ---------- 0. Baixar fonte + instalar dependências Python ----------
 FONT="fonte_titulo.ttf"
 curl -sL -o "$FONT" "https://raw.githubusercontent.com/google/fonts/main/ofl/baloo2/Baloo2%5Bwght%5D.ttf" || true
