@@ -20,9 +20,19 @@ jobs:
         # baixar um build estatico direto de uma release do GitHub (mesma rede
         # do runner, sem depender de apt/dpkg/mirror nenhum) -- elimina essa
         # classe inteira de falha.
+        # 25/08/2026: o curl sem --fail salvava pagina de erro/arquivo vazio
+        # como se fosse sucesso quando o download falhava (mesma classe de bug
+        # ja corrigida antes no script pra outros downloads) -- causava falha
+        # rapida (~1s) no tar, pulando a etapa de render inteira sem aviso
+        # claro. Adicionado --fail (detecta erro de verdade) + retry (cobre
+        # instabilidade transitoria do runner) + checagem explicita do arquivo.
         timeout-minutes: 5
         run: |
-          curl -sL -o /tmp/ffmpeg.tar.xz "https://github.com/BtbN/FFmpeg-Builds/releases/download/latest/ffmpeg-master-latest-linux64-gpl.tar.xz"
+          curl -sL --fail --retry 5 --retry-delay 3 --retry-all-errors -o /tmp/ffmpeg.tar.xz "https://github.com/BtbN/FFmpeg-Builds/releases/download/latest/ffmpeg-master-latest-linux64-gpl.tar.xz"
+          if [ ! -s /tmp/ffmpeg.tar.xz ]; then
+            echo "ERRO: download do ffmpeg falhou ou veio vazio"
+            exit 1
+          fi
           mkdir -p /tmp/ffmpeg-extract
           tar -xJf /tmp/ffmpeg.tar.xz -C /tmp/ffmpeg-extract --strip-components=1
           sudo mv /tmp/ffmpeg-extract/bin/ffmpeg /usr/local/bin/ffmpeg
