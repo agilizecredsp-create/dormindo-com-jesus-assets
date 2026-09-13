@@ -284,7 +284,7 @@ if [ "$MODO_AFIRMACAO" = "true" ]; then
 
   echo "== Juntando video + narracao com afirmacoes sincronizadas (sem musica, sem legenda karaoke) =="
   ffmpeg -y -i video_sem_audio.mp4 -i audio_final.m4a \
-    -vf "${AFIRMACOES_FILTRO_LONGO},drawtext=fontfile=${FONT}:text='Inscreva-se no canal':fontsize=52:fontcolor=white:borderw=6:bordercolor=black@0.7:box=1:boxcolor=black@0.4:boxborderw=14:x=w-tw-40:y=40" \
+    -vf "${AFIRMACOES_FILTRO_LONGO},drawtext=fontfile=${FONT}:text='Pais\, inscrevam-se':fontsize=48:fontcolor=white:borderw=6:bordercolor=black@0.7:box=1:boxcolor=black@0.4:boxborderw=14:x=w-tw-40:y=40" \
     -c:v libx264 -preset veryfast -pix_fmt yuv420p -c:a aac -shortest video_final.mp4 -loglevel error
   echo "== Concluído (modo afirmacao) =="
   ffprobe -v error -show_entries format=duration -of default=noprint_wrappers=1:nokey=1 video_final.mp4
@@ -607,7 +607,7 @@ PYEOF
 
   # ---------- 4. Juntar áudio + vídeo + QUEIMAR LEGENDA (reencode, nao da mais pra usar -c:v copy) ----------
   echo "== Juntando áudio, vídeo e legenda karaokê =="
-  ffmpeg -y -i video_sem_audio.mp4 -i audio_final.m4a -vf "ass=legendas.ass:fontsdir=$(realpath ~/.fonts 2>/dev/null || echo /usr/share/fonts),drawtext=fontfile=${FONT}:text='Inscreva-se no canal':fontsize=52:fontcolor=white:borderw=6:bordercolor=black@0.7:box=1:boxcolor=black@0.4:boxborderw=14:x=w-tw-40:y=40" \
+  ffmpeg -y -i video_sem_audio.mp4 -i audio_final.m4a -vf "ass=legendas.ass:fontsdir=$(realpath ~/.fonts 2>/dev/null || echo /usr/share/fonts),drawtext=fontfile=${FONT}:text='Pais\, inscrevam-se':fontsize=48:fontcolor=white:borderw=6:bordercolor=black@0.7:box=1:boxcolor=black@0.4:boxborderw=14:x=w-tw-40:y=40" \
     -c:v libx264 -preset veryfast -pix_fmt yuv420p -c:a aac -shortest video_final.mp4 -loglevel error
   echo "== Concluído =="
   ffprobe -v error -show_entries format=duration -of default=noprint_wrappers=1:nokey=1 video_final.mp4
@@ -633,7 +633,7 @@ gerar_short() {
       [bg]scale=1080:1920,gblur=sigma=20,crop=1080:1920[bgblur]; \
       [fg]scale=1080:-2[fgscaled]; \
       [bgblur][fgscaled]overlay=(W-w)/2:(H-h)/2[base]; \
-      [base]drawtext=fontfile=${FONT}:text='Inscreva-se e abencoe mais familias':fontsize=48:fontcolor=white:borderw=8:bordercolor=black@0.85:shadowx=3:shadowy=3:shadowcolor=black@0.6:box=1:boxcolor=black@0.35:boxborderw=16:x=(w-text_w)/2:y=140" \
+      [base]drawtext=fontfile=${FONT}:text='Pais\, inscrevam-se no canal':fontsize=44:fontcolor=white:borderw=8:bordercolor=black@0.85:shadowx=3:shadowy=3:shadowcolor=black@0.6:box=1:boxcolor=black@0.35:boxborderw=16:x=(w-text_w)/2:y=140" \
     -c:v libx264 -preset veryfast -pix_fmt yuv420p -c:a aac "$OUT" -loglevel error
 }
 gerar_short "$INICIO_SHORT_1" "short_1.mp4"
@@ -692,7 +692,7 @@ CTA_DUR=5
 CTA_IMG="img_01.png"
 ffmpeg -y -loop 1 -i "$CTA_IMG" -f lavfi -i anullsrc=channel_layout=stereo:sample_rate=44100 -t "$CTA_DUR" \
   -vf "scale=1920:1080,fps=25,\
-drawtext=fontfile=${FONT}:text='Inscreva-se no canal!':fontsize=92:fontcolor=white:borderw=12:bordercolor=black@0.85:shadowx=4:shadowy=4:shadowcolor=black@0.6:x=(w-text_w)/2:y=(h-text_h)/2-60,\
+drawtext=fontfile=${FONT}:text='Pais\, inscrevam-se!':fontsize=92:fontcolor=white:borderw=12:bordercolor=black@0.85:shadowx=4:shadowy=4:shadowcolor=black@0.6:x=(w-text_w)/2:y=(h-text_h)/2-60,\
 drawtext=fontfile=${FONT}:text='e ajude essa bencao a chegar em mais familias':fontsize=48:fontcolor=white:borderw=9:bordercolor=black@0.85:shadowx=3:shadowy=3:shadowcolor=black@0.6:x=(w-text_w)/2:y=(h-text_h)/2+70,\
 fade=t=in:st=0:d=0.5,fade=t=out:st=$(echo "$CTA_DUR - 0.5" | bc):d=0.5" \
   -c:v libx264 -preset veryfast -pix_fmt yuv420p -c:a aac -shortest vinheta.mp4 -loglevel error
