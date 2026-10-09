@@ -39,7 +39,8 @@ if [ ! -s "$FONT" ]; then
   FONT="/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf"
 fi
 echo "== Instalando Pillow (thumbnail) e faster-whisper (legenda karaokê) =="
-pip install pillow faster-whisper --break-system-packages --quiet 2>/dev/null || pip install pillow faster-whisper --quiet
+pip install pillow faster-whisper "av==15.1.0" --break-system-packages --quiet 2>/dev/null || pip install pillow faster-whisper "av==15.1.0" --quiet
+python3 -c "import av; print(\"av versao:\", av.__version__)"
 
 # Registra a fonte no fontconfig, senao a libass (usada no filtro ass= mais abaixo)
 # nao acha "Baloo 2" pelo nome e cai silenciosamente numa fonte generica do sistema.
